@@ -1,0 +1,20 @@
+app = "star-bot"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  BOT_PORT = "8099"
+
+[http_service]
+  internal_port = 8099
+  force_https = true
+  auto_stop_machines = false      # ⚠️ VERY IMPORTANT
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
