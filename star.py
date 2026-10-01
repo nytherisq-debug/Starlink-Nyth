@@ -36,7 +36,7 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 # ============================================================
 # CONFIGURATION
 # ============================================================
-BOT_TOKEN: str = "8706721477:AAH-GJra7cCxa9PWCTGwoBtT76pWlyDqgaE"
+BOT_TOKEN: str = "8706721477:AAH8SDzBKuRAR-7rcIKWB1FvgOwIMEwiepI"
 ADMINS: Tuple[str, ...] = ("8797803204",)
 ADMIN_USERNAME: str = "@Nytheris_q"
 
