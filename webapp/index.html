@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>STAR LINK</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #0f0f13);
+    --text: var(--tg-theme-text-color, #ffffff);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --btn: var(--tg-theme-button-color, #2aabee);
+    --btn-text: var(--tg-theme-button-text-color, #ffffff);
+    --secondary: var(--tg-theme-secondary-bg-color, #1c1c22);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 16px 14px 32px;
+    overflow-x: hidden;
+  }
+  .header {
+    text-align: center;
+    padding: 18px 12px 14px;
+    margin-bottom: 8px;
+  }
+  .logo {
+    font-size: 42px;
+    animation: float 2.4s ease-in-out infinite;
+    display: inline-block;
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0) scale(1); }
+    50% { transform: translateY(-8px) scale(1.08); }
+  }
+  .title {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    margin-top: 6px;
+    background: linear-gradient(135deg, #ff6b6b, #feca57, #48dbfb, #ff9ff3);
+    background-size: 300% 300%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: gradientShift 4s ease infinite;
+  }
+  @keyframes gradientShift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+  .subtitle {
+    color: var(--hint);
+    font-size: 13px;
+    margin-top: 4px;
+  }
+  .user-card {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .avatar {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(102,126,234,0.4); }
+    50% { box-shadow: 0 0 0 10px rgba(102,126,234,0); }
+  }
+  .user-info { flex: 1; }
+  .user-name { font-weight: 700; font-size: 15px; }
+  .user-id { font-size: 12px; color: var(--hint); margin-top: 2px; }
+  .badge {
+    background: linear-gradient(135deg, #11998e, #38ef7d);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 20px;
+    animation: badgeGlow 2s ease-in-out infinite;
+  }
+  .badge.free {
+    background: linear-gradient(135deg, #eb3349, #f45c43);
+  }
+  @keyframes badgeGlow {
+    0%, 100% { filter: brightness(1); }
+    50% { filter: brightness(1.15); }
+  }
+  .section-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--hint);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin: 16px 4px 10px;
+  }
+  .btn {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    border: none;
+    border-radius: 14px;
+    padding: 15px 16px;
+    margin-bottom: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    cursor: pointer;
+    transition: transform 0.15s, opacity 0.15s;
+    text-align: left;
+    position: relative;
+    overflow: hidden;
+  }
+  .btn:active { transform: scale(0.97); opacity: 0.9; }
+  .btn .icon {
+    font-size: 24px;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.15);
+    animation: iconBounce 2.5s ease-in-out infinite;
+  }
+  @keyframes iconBounce {
+    0%, 100% { transform: rotate(0deg) scale(1); }
+    25% { transform: rotate(-6deg) scale(1.1); }
+    75% { transform: rotate(6deg) scale(1.05); }
+  }
+  .btn .label { flex: 1; }
+  .btn .arrow { opacity: 0.6; font-size: 14px; }
+  .btn-primary {
+    background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+    box-shadow: 0 4px 20px rgba(56,239,125,0.25);
+  }
+  .btn-blue {
+    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    box-shadow: 0 4px 16px rgba(79,172,254,0.2);
+  }
+  .btn-purple {
+    background: linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%);
+    color: #2d1b4e;
+    box-shadow: 0 4px 16px rgba(161,140,209,0.25);
+  }
+  .btn-orange {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    box-shadow: 0 4px 16px rgba(245,87,108,0.2);
+  }
+  .btn-dark {
+    background: linear-gradient(135deg, #2c3e50 0%, #4a5568 100%);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  }
+  .btn-red {
+    background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+    box-shadow: 0 4px 16px rgba(235,51,73,0.2);
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .grid-2 .btn {
+    margin-bottom: 0;
+    flex-direction: column;
+    text-align: center;
+    padding: 16px 10px;
+    gap: 8px;
+  }
+  .grid-2 .btn .icon {
+    width: 42px; height: 42px;
+    font-size: 26px;
+  }
+  .grid-2 .btn .arrow { display: none; }
+  .footer {
+    text-align: center;
+    margin-top: 24px;
+    font-size: 11px;
+    color: var(--hint);
+    opacity: 0.7;
+  }
+  .sparkle {
+    position: absolute;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #fff;
+    animation: sparkle 1.5s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes sparkle {
+    0%, 100% { opacity: 0; transform: scale(0); }
+    50% { opacity: 1; transform: scale(1); }
+  }
+  /* Voucher panel */
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .back-btn {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.15);
+    color: var(--text);
+    border-radius: 12px;
+    padding: 12px;
+    width: 100%;
+    font-size: 14px;
+    font-weight: 600;
+    margin-top: 8px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+  <!-- MAIN MENU -->
+  <div id="main" class="panel active">
+    <div class="header">
+      <div class="logo">ðŸš€</div>
+      <div class="title">STAR LINK</div>
+      <div class="subtitle">Premium Voucher Scanner</div>
+    </div>
+
+    <div class="user-card">
+      <div class="avatar" id="avatar">ðŸ‘¤</div>
+      <div class="user-info">
+        <div class="user-name" id="uname">User</div>
+        <div class="user-id" id="uid">â€”</div>
+      </div>
+      <div class="badge free" id="badge">FREE</div>
+    </div>
+
+    <button class="btn btn-primary" onclick="act('scan')">
+      <span class="icon">ðŸ”¥</span>
+      <span class="label">SCAN á€…á€á€„á€ºá€™á€Šá€º</span>
+      <span class="arrow">â€º</span>
+    </button>
+
+    <div class="section-title">Menu</div>
+    <div class="grid-2">
+      <button class="btn btn-blue" onclick="act('paid')">
+        <span class="icon">ðŸŽ«</span>
+        <span class="label">Paid User</span>
+      </button>
+      <button class="btn btn-purple" onclick="act('result')">
+        <span class="icon">ðŸ“‹</span>
+        <span class="label">Success Codes</span>
+      </button>
+      <button class="btn btn-orange" onclick="act('recheck')">
+        <span class="icon">ðŸ”„</span>
+        <span class="label">Recheck</span>
+      </button>
+      <button class="btn btn-red" onclick="act('stop')">
+        <span class="icon">ðŸ›‘</span>
+        <span class="label">Scan á€›á€•á€ºá€™á€Šá€º</span>
+      </button>
+    </div>
+
+    <div class="section-title">Voucher Modes</div>
+    <div class="grid-2">
+      <button class="btn btn-dark" onclick="act('mode_6')"><span class="icon">ðŸ”¢</span><span class="label">6 á€œá€¯á€¶á€¸</span></button>
+      <button class="btn btn-dark" onclick="act('mode_7')"><span class="icon">ðŸ”¢</span><span class="label">7 á€œá€¯á€¶á€¸</span></button>
+      <button class="btn btn-dark" onclick="act('mode_8')"><span class="icon">ðŸ”¢</span><span class="label">8 á€œá€¯á€¶á€¸</span></button>
+      <button class="btn btn-dark" onclick="act('mode_9')"><span class="icon">ðŸ”¢</span><span class="label">9 á€œá€¯á€¶á€¸</span></button>
+      <button class="btn btn-dark" onclick="act('mode_mixed')"><span class="icon">ðŸ” </span><span class="label">Mixed 6</span></button>
+      <button class="btn btn-dark" onclick="act('mode_all')"><span class="icon">ðŸŽ²</span><span class="label">Random 6</span></button>
+    </div>
+
+    <div class="footer">STAR LINK Â· Ultimate Edition</div>
+  </div>
+
+<script>
+  const tg = window.Telegram.WebApp;
+  tg.ready();
+  tg.expand();
+  try { tg.setHeaderColor('#0f0f13'); tg.setBackgroundColor('#0f0f13'); } catch(e) {}
+
+  const user = tg.initDataUnsafe?.user;
+  if (user) {
+    document.getElementById('uname').textContent = user.first_name || user.username || 'User';
+    document.getElementById('uid').textContent = 'ID: ' + user.id;
+    document.getElementById('avatar').textContent = (user.first_name || 'U')[0].toUpperCase();
+  }
+
+  // paid status from start_param or query
+  const params = new URLSearchParams(location.search);
+  if (params.get('paid') === '1') {
+    const b = document.getElementById('badge');
+    b.textContent = 'PAID ðŸ’Ž';
+    b.classList.remove('free');
+  }
+
+  function haptic() {
+    try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
+  }
+
+  function act(action) {
+    haptic();
+    // Send data to bot
+    const payload = JSON.stringify({ action: action, ts: Date.now() });
+    try {
+      tg.sendData(payload);
+    } catch(e) {
+      // fallback: open bot with deep link
+      tg.openTelegramLink('https://t.me/' + (tg.initDataUnsafe?.bot?.username || 'bot') + '?start=' + action);
+    }
+    try { tg.close(); } catch(e) {}
+  }
+</script>
+</body>
+</html>
