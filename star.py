@@ -2259,20 +2259,37 @@ async def web_server():
 # ============================================================
 async def start_polling():
     backoff = 5
+    # Clear any webhook / stale getUpdates conflict before polling
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        log.info("Webhook cleared â€” starting long-polling")
+        await asyncio.sleep(1.5)
+    except Exception as e:
+        log.warning("delete_webhook: %s", e)
+
     while True:
         try:
-            await bot.infinity_polling(timeout=30, request_timeout=90)
+            await bot.infinity_polling(
+                timeout=25,
+                request_timeout=60,
+                skip_pending=True,
+                logger_level=logging.INFO,
+            )
             return
         except asyncio.CancelledError:
             raise
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            log.warning("Polling network error: %s. Reconnect in %ds", e, backoff)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 60)
         except Exception as e:
-            log.exception("Polling error: %s. Reconnect in %ds", e, backoff)
+            err = str(e).lower()
+            if "409" in err or "conflict" in err:
+                log.warning("409 Conflict â€” another instance polling. Retry in %ds", backoff)
+                try:
+                    await bot.delete_webhook(drop_pending_updates=True)
+                except Exception:
+                    pass
+            else:
+                log.warning("Polling error: %s. Reconnect in %ds", e, backoff)
             await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 60)
+            backoff = min(backoff * 2, 45)
 
 # ============================================================
 # LIFECYCLE
