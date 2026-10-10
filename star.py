@@ -39,7 +39,7 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 # ============================================================
 BOT_TOKEN: str = os.environ.get(
     "BOT_TOKEN",
-    "8706721477:AAGEZEbKBfI2gBHi6taWj1ToH2-EStFF6HI"
+    "8706721477:AAHH-eQaJcSFTjiibslao-DisDQuZlsXsNI"
 )
 ADMINS: Tuple[str, ...] = tuple(
     os.environ.get("ADMINS", "8797803204").split(",")
